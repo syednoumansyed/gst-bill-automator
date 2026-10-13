@@ -1,0 +1,31 @@
+# secrets and local data
+.env*
+config/*.json
+!config/business.example.json
+backups
+DOCs
+*.pdf
+
+# build output and dependencies
+node_modules
+.next
+.next.pre-debug-*
+out
+coverage
+*.tsbuildinfo
+next-env.d.ts
+
+# repo and tooling
+.git
+.github
+.vercel
+.claude
+.DS_Store
+plans
+graft
+npm-debug.log*
+
+# not needed inside the image
+Dockerfile
+docker-compose.yml
+docs

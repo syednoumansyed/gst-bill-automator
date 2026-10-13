@@ -1,0 +1,57 @@
+{
+  "businessProfile": {
+    "legalName": "Example Consulting",
+    "tradeName": "Example Studio",
+    "gstin": "29ABCDE1234F1ZW",
+    "pan": "ABCDE1234F",
+    "address": "12 Example Road",
+    "city": "Bengaluru",
+    "district": "Bengaluru Urban",
+    "state": "Karnataka",
+    "pincode": "560001",
+    "country": "India",
+    "designation": "Proprietor",
+    "phone": "",
+    "email": ""
+  },
+  "luts": [
+    {
+      "formNumber": "FORM GST RFD-11",
+      "rule": "96A",
+      "filedAt": "GST portal",
+      "filedDate": "2026-04-01",
+      "financialYear": "2026-27",
+      "applicableFor": "Export of services without payment of integrated tax",
+      "arn": "AD290426000123X"
+    }
+  ],
+  "bankAccounts": [
+    {
+      "id": "default",
+      "label": "Primary Account",
+      "bankName": "Example Bank",
+      "accountNumber": "123456789012",
+      "ifsc": "EXMP0001234",
+      "branch": "Example Branch",
+      "isPrimary": true
+    }
+  ],
+  "invoiceDefaults": {
+    "sacCode": "998392",
+    "placeOfSupply": "Outside India",
+    "gstNote": "Export of Services — Supply made under Letter of Undertaking without payment of Integrated Tax as per Rule 96A of the CGST Rules, 2017.",
+    "serviceDescription": "Software Development Services"
+  },
+  "clientProfile": {
+    "clientName": "Client Legal Name",
+    "clientAddress": "Client address",
+    "country": "Client country",
+    "registrationNumber": "",
+    "vatId": "",
+    "group": ""
+  },
+  "airtableIntegration": {
+    "baseId": "",
+    "tableName": "GST Invoices"
+  }
+}

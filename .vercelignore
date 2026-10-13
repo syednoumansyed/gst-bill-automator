@@ -1,0 +1,6 @@
+.env*
+config/business.json
+DOCs
+*.pdf
+*.log
+.git
