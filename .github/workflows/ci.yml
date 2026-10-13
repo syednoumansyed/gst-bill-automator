@@ -1,9 +1,8 @@
 name: CI
 
+# Manual only: run it from the Actions tab ("Run workflow") when you want a check
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
