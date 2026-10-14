@@ -205,11 +205,30 @@ describe("sync never leaves a partial entry", () => {
     fetchSpy.mockRejectedValueOnce(new TypeError("fetch failed")).mockImplementationOnce(async (input) => {
       expect(String(input)).toContain("filterByFormula");
       const generatedAt = (render.generatePdf.mock.calls[0][0] as { complianceMetadata: { generatedAt: string } }).complianceMetadata.generatedAt;
-      return new Response(JSON.stringify({ records: [{ fields: { "Generated At": generatedAt } }] }), { status: 200 });
+      const urls = await Promise.all(blob.put.mock.results.map((r) => r.value as Promise<{ url: string }>));
+      const gstUrl = urls.map((u) => u.url).find((u) => u.includes("/") && u.split("/").pop()!.includes("gst-"))!;
+      const gstPdf = [{ filename: gstUrl.split("/").pop() }];
+      return new Response(JSON.stringify({ records: [{ fields: { "Generated At": generatedAt, "GST Invoice PDF": gstPdf } }] }), { status: 200 });
     });
     try {
       const res = await generate(draft());
       expect(res.headers.get("X-Airtable-Sync-Status")).toBe("success");
+      expect(blob.del).not.toHaveBeenCalled();
+    } finally {
+      stubRouteEnv();
+    }
+  });
+
+  it("a row with the same timestamp but another run's PDF doesn't count: still unsure, uploads kept", async () => {
+    withSync();
+    fetchSpy.mockRejectedValueOnce(new TypeError("fetch failed")).mockImplementationOnce(async () => {
+      const generatedAt = (render.generatePdf.mock.calls[0][0] as { complianceMetadata: { generatedAt: string } }).complianceMetadata.generatedAt;
+      const otherRun = [{ filename: "gst-INV-2026-08-OTHERRUN.pdf" }];
+      return new Response(JSON.stringify({ records: [{ fields: { "Generated At": generatedAt, "GST Invoice PDF": otherRun } }] }), { status: 200 });
+    });
+    try {
+      const res = await generate(draft());
+      expect(res.headers.get("X-Airtable-Sync-Code")).toBe("AIRTABLE_UNCERTAIN");
       expect(blob.del).not.toHaveBeenCalled();
     } finally {
       stubRouteEnv();

@@ -10,6 +10,8 @@ const money = z
   .number()
   .finite()
   .nonnegative()
+  // Far above any real invoice, and keeps amount × 100 an exact integer
+  .max(1e12, "Amount is too large.")
   // Exact check: n * 100 drifts for large amounts (134217728.02 * 100 = 13421772802.000002)
   .refine((n) => Number(n.toFixed(2)) === n, "Use at most two decimal places.");
 const text = z.string().trim().max(500);
@@ -42,14 +44,18 @@ export const invoiceDraftSchema = z.object({
   fira: z
     .object({
       source: z.enum(["pdf", "manual"]),
-      /** FCY currency as printed on the FIRA ("USD" for manual entry); validateDraft refuses anything but USD */
-      currency: text.min(1).default("USD"),
+      /**
+       * FCY currency as printed on the FIRA. Blank means unread: validateDraft asks the user to confirm it.
+       * Only manual entry (a USD receipt) defaults to USD; a PDF FIRA's currency is never assumed.
+       */
+      currency: text.default(""),
       firaRef: text,
       /** YYYY-MM-DD or DD-MM-YYYY as printed on the FIRA */
       processedDate: text.min(1),
       fcyAmount: money,
       inrAmount: money,
     })
+    .transform((f) => (f.source === "manual" && !f.currency ? { ...f, currency: "USD" } : f))
     .nullable(),
   options: z.object({
     placeOfSupply: text,

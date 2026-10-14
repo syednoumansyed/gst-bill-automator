@@ -119,7 +119,7 @@ async function withCleanup(urls: string[], token: string, failure: Failure): Pro
   }
   const followUp =
     cleanup === "recorded"
-      ? `The PDFs uploaded for it couldn't be removed; they are listed in config/${PENDING_CLEANUP_FILE} and will be removed on the next sync.`
+      ? `The PDFs uploaded for it couldn't be removed; they are listed in ${pendingCleanupPath()} and will be removed on the next sync.`
       : "The PDFs uploaded for it couldn't be removed or recorded for a later retry; delete them from the Blob store by hand.";
   return { status: "failed", code: "BLOB_CLEANUP_FAILED", cause: failure.code, message: `${failure.message} ${followUp}` };
 }
@@ -163,6 +163,14 @@ async function deleteBlobs(urls: string[], token: string): Promise<"deleted" | "
     return recorded ? "recorded" : "lost";
   }
 }
+
+const fileNameOf = (url: string) => {
+  try {
+    return decodeURIComponent(new URL(url).pathname.split("/").pop() || "");
+  } catch {
+    return "";
+  }
+};
 
 const pathnameOf = (url: string) => {
   try {
@@ -280,10 +288,10 @@ async function writeAirtableRow(
   const legacyFields = buildLegacyAirtableFields(invoice);
   const complianceFields = buildComplianceAirtableFields(invoice);
   let res = await upsert(airtable, { ...legacyFields, ...complianceFields, ...attachments });
-  if (res === null) return (await rowWasWritten(airtable, invoice)) ? "written" : "uncertain";
+  if (res === null) return (await rowWasWritten(airtable, invoice, attachments)) ? "written" : "uncertain";
   if (res.ok) return "written";
   // A 5xx, 408 or 429 doesn't prove nothing was saved (a proxy can fail after Airtable committed): check first
-  if (mayHaveCommitted(res.status)) return (await rowWasWritten(airtable, invoice)) ? "written" : "uncertain";
+  if (mayHaveCommitted(res.status)) return (await rowWasWritten(airtable, invoice, attachments)) ? "written" : "uncertain";
 
   let error = await readJsonSafely(res);
   if (hasUnknownFieldError(error)) {
@@ -315,11 +323,18 @@ async function upsert(airtable: AirtableSettings, fields: AirtableFields): Promi
 }
 
 /** After an unanswered write: is this run's row (same "Generated At") in Airtable? Any doubt answers false. */
-async function rowWasWritten(airtable: AirtableSettings, invoice: GeneratedInvoice): Promise<boolean> {
+/**
+ * Whether this run's row exists: same Deel invoice, same "Generated At", and, when attachments were sent, the same
+ * GST PDF filename (blob names carry a random suffix, so another run in the same millisecond can't match).
+ */
+async function rowWasWritten(airtable: AirtableSettings, invoice: GeneratedInvoice, attachments: AirtableFields): Promise<boolean> {
   const metadata = invoice.complianceMetadata;
   const quoted = metadata.deel.invoiceNumber.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
   const query = new URLSearchParams({ filterByFormula: `{Deel Invoice Number}='${quoted}'`, maxRecords: "5" });
   query.append("fields[]", "Generated At");
+  query.append("fields[]", "GST Invoice PDF");
+  const sent = attachments["GST Invoice PDF"];
+  const sentName = Array.isArray(sent) && sent[0] ? fileNameOf(sent[0].url) : null;
   try {
     const res = await fetch(`${airtable.url}?${query}`, {
       headers: { Authorization: `Bearer ${airtable.token}` },
@@ -327,7 +342,12 @@ async function rowWasWritten(airtable: AirtableSettings, invoice: GeneratedInvoi
     });
     if (!res.ok) return false;
     const body = (await res.json()) as { records?: { fields?: Record<string, unknown> }[] };
-    return (body.records ?? []).some((r) => r.fields?.["Generated At"] === metadata.generatedAt);
+    return (body.records ?? []).some((r) => {
+      if (r.fields?.["Generated At"] !== metadata.generatedAt) return false;
+      if (!sentName) return true;
+      const stored = r.fields?.["GST Invoice PDF"];
+      return Array.isArray(stored) && stored.some((a) => (a as { filename?: string })?.filename === sentName);
+    });
   } catch {
     return false;
   }

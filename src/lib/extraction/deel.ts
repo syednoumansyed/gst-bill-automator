@@ -17,12 +17,8 @@ import {
 } from "./strategies";
 import { sequentialLines, type PdfText, type TextItem } from "./text";
 
-// Currency codes the foreign-amount check recognises (ISO 4217, the ones contractors are commonly paid in)
-const ISO_CURRENCIES = new Set([
-  "USD", "EUR", "GBP", "INR", "AED", "SAR", "QAR", "SGD", "CAD", "AUD", "NZD", "JPY", "CNY", "HKD", "CHF",
-  "SEK", "NOK", "DKK", "PLN", "CZK", "HUF", "ZAR", "BRL", "MXN", "ARS", "ILS", "TRY", "KRW", "MYR", "THB",
-  "IDR", "PHP", "VND", "PKR", "BDT", "LKR", "NGN", "KES", "EGP", "RON", "BGN", "UAH",
-]);
+// Every ISO 4217 currency code the runtime knows, so any real foreign amount is caught ("SAC 998392" is not one)
+const ISO_CURRENCIES = new Set(Intl.supportedValuesOf("currency"));
 import type { DeelExtraction, DeelLineItem, DocKind, Field, LayoutMatch } from "./types";
 
 /**
