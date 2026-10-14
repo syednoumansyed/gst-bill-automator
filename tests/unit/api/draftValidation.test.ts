@@ -26,17 +26,71 @@ describe("validateDraft: accepts", () => {
     expect(check(draft({ fira: { source: "manual", firaRef: "", processedDate: "2026-08-25" } }))).toEqual([]);
   });
 
-  it("a zero-value line next to a real one, and totals off by one cent of rounding", () => {
+  it("a zero-value line next to a real one", () => {
     const d = draft({
       deel: {
         lineItems: [
           { description: "Fixed rate: Monthly payment", amount: 2000 },
           { description: "Other: adjustment", amount: 0 },
         ],
-        total: 2000.01,
       },
     });
     expect(check(d)).toEqual([]);
+  });
+
+  it("cent amounts that only add up exactly in whole cents (100.01 + 100.00 = 200.01)", () => {
+    const d = draft({
+      deel: {
+        lineItems: [
+          { description: "Fixed rate: x", amount: 100.01 },
+          { description: "Bonus: y", amount: 100.0 },
+        ],
+        subtotal: 200.01,
+        total: 200.01,
+      },
+      fira: null,
+    });
+    expect(check(d)).toEqual([]);
+    // floating point would make 0.1 + 0.2 ≠ 0.3; whole cents don't
+    const tenths = draft({
+      deel: { lineItems: [{ description: "a", amount: 0.1 }, { description: "b", amount: 0.2 }], subtotal: 0.3, total: 0.3 },
+      fira: null,
+    });
+    expect(check(tenths)).toEqual([]);
+  });
+});
+
+describe("validateDraft: whole cents and currencies", () => {
+  it("refuses fractions of a cent (two items of 100.005) as DRAFT_INVALID", () => {
+    const r = only(
+      draft({
+        deel: { lineItems: [{ description: "a", amount: 100.005 }, { description: "b", amount: 100.005 }], subtotal: 200.01, total: 200.01 },
+        fira: null,
+      }),
+    );
+    expect(r.codes).toEqual(["DRAFT_INVALID", "DRAFT_INVALID"]);
+    expect(r.fields).toEqual(["deel.lineItems.0.amount", "deel.lineItems.1.amount"]);
+  });
+
+  it("a total one cent off is no longer waved through", () => {
+    expect(only(draft({ deel: { total: 2000.01 }, fira: null })).codes).toEqual(["DEEL_TOTALS_DISAGREE"]);
+  });
+
+  it("a Deel invoice in another currency, as printed", () => {
+    const r = only(draft({ deel: { currency: "EUR" }, fira: null }));
+    expect(r.codes).toEqual(["DEEL_CURRENCY_UNSUPPORTED"]);
+    expect(r.fields).toEqual(["deel.currency"]);
+    expect(r.issues[0].message).toMatch(/EUR/);
+  });
+
+  it("a FIRA in another currency", () => {
+    const r = only(draft({ fira: { currency: "GBP" } }));
+    expect(r.codes).toEqual(["FIRA_CURRENCY_UNSUPPORTED"]);
+    expect(r.fields).toEqual(["fira.currency"]);
+  });
+
+  it("a FIRA amount with a fraction of a paisa", () => {
+    expect(only(draft({ fira: { inrAmount: 179955.005 } })).fields).toEqual(["fira.inrAmount"]);
   });
 });
 
@@ -64,12 +118,6 @@ describe("validateDraft: Deel figures", () => {
     const r = only(draft({ deel: { vat: 200, total: 2200 }, fira: null }));
     expect(r.codes).toEqual(["DEEL_VAT_UNSUPPORTED"]);
     expect(r.issues[0].action).toMatch(/VAT row/);
-  });
-
-  it("a currency other than USD", () => {
-    const d = draft({ fira: null });
-    (d.deel as { currency: string }).currency = "EUR";
-    expect(only(d).codes).toEqual(["DEEL_CURRENCY_UNSUPPORTED"]);
   });
 
   it("missing identity fields, each on its own field", () => {

@@ -1,6 +1,9 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type { InvoiceDraft } from "@/lib/draft";
-import { deelLines, firaLines } from "../../helpers/fixtures";
+import { deelLines, fakeConfigJson, firaLines } from "../../helpers/fixtures";
 import { linesToPdf } from "../../helpers/pdf";
 import { generateRequest, stubRouteEnv } from "../../helpers/route";
 import { codes, draft } from "./fixtures";
@@ -10,6 +13,19 @@ const render = vi.hoisted(() => ({ generatePdf: vi.fn() }));
 vi.mock("@/lib/generatePdf", () => render);
 const blob = vi.hoisted(() => ({ put: vi.fn(), del: vi.fn() }));
 vi.mock("@vercel/blob", () => blob);
+
+// Lets a test inject a fault after the render and before the sync
+const fault = vi.hoisted(() => ({ beforeSync: false }));
+vi.mock("@/lib/invoiceResponse", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/invoiceResponse")>();
+  return {
+    ...actual,
+    buildInvoiceResponse: (...args: Parameters<typeof actual.buildInvoiceResponse>) => {
+      if (fault.beforeSync) throw new Error("injected fault");
+      return actual.buildInvoiceResponse(...args);
+    },
+  };
+});
 
 const { POST } = await import("@/app/api/generate/route");
 
@@ -28,6 +44,7 @@ beforeEach(() => {
   vi.restoreAllMocks();
   for (const level of ["error", "warn", "info"] as const) vi.spyOn(console, level).mockImplementation(() => {});
   render.generatePdf.mockReset().mockResolvedValue(FAKE_PDF);
+  fault.beforeSync = false;
   let n = 0;
   blob.put.mockReset().mockImplementation(async (name: string) => ({ url: `https://blob.example/${n++}-${name}` }));
   blob.del.mockReset().mockResolvedValue(undefined);
@@ -166,13 +183,45 @@ describe("sync never leaves a partial entry", () => {
     }
   });
 
-  it("Airtable unreachable: blobs deleted, AIRTABLE_UNREACHABLE", async () => {
+  it("no answer from Airtable: the uploads are KEPT and the user is told to check Airtable (AIRTABLE_UNCERTAIN)", async () => {
     withSync();
-    fetchSpy.mockRejectedValue(new TypeError("fetch failed"));
+    fetchSpy.mockRejectedValue(new DOMException("The operation timed out.", "TimeoutError"));
     try {
       const res = await generate(draft());
+      expect(res.status).toBe(200);
       expect(res.headers.get("X-Airtable-Sync-Status")).toBe("failed");
-      expect(res.headers.get("X-Airtable-Sync-Code")).toBe("AIRTABLE_UNREACHABLE");
+      expect(res.headers.get("X-Airtable-Sync-Code")).toBe("AIRTABLE_UNCERTAIN");
+      expect(decodeURIComponent(res.headers.get("X-Airtable-Sync-Message")!)).toMatch(/check whether .* row is there/i);
+      expect(blob.del).not.toHaveBeenCalled();
+      // the write, then the follow-up query that couldn't confirm it either
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      stubRouteEnv();
+    }
+  });
+
+  it("no answer, but the follow-up query finds this run's row: success", async () => {
+    withSync();
+    fetchSpy.mockRejectedValueOnce(new TypeError("fetch failed")).mockImplementationOnce(async (input) => {
+      expect(String(input)).toContain("filterByFormula");
+      const generatedAt = (render.generatePdf.mock.calls[0][0] as { complianceMetadata: { generatedAt: string } }).complianceMetadata.generatedAt;
+      return new Response(JSON.stringify({ records: [{ fields: { "Generated At": generatedAt } }] }), { status: 200 });
+    });
+    try {
+      const res = await generate(draft());
+      expect(res.headers.get("X-Airtable-Sync-Status")).toBe("success");
+      expect(blob.del).not.toHaveBeenCalled();
+    } finally {
+      stubRouteEnv();
+    }
+  });
+
+  it("an error status with an unreadable body is still a definite rejection: uploads deleted", async () => {
+    withSync();
+    fetchSpy.mockResolvedValue(new Response("<html>bad gateway", { status: 502 }));
+    try {
+      const res = await generate(draft());
+      expect(res.headers.get("X-Airtable-Sync-Code")).toBe("AIRTABLE_REJECTED");
       expect(blob.del).toHaveBeenCalledOnce();
     } finally {
       stubRouteEnv();
@@ -200,7 +249,7 @@ describe("sync never leaves a partial entry", () => {
     }
   });
 
-  it("a failed clean-up is logged by code only and still reports failed", async () => {
+  it("a failed clean-up with read-only config: BLOB_CLEANUP_FAILED, told to delete by hand, logged by code and pathname", async () => {
     withSync();
     airtableStatus = 401;
     airtableBody = { error: { type: "AUTHENTICATION_REQUIRED", message: "Authentication required" } };
@@ -208,12 +257,51 @@ describe("sync never leaves a partial entry", () => {
     try {
       const res = await generate(draft());
       expect(res.headers.get("X-Airtable-Sync-Status")).toBe("failed");
-      expect(res.headers.get("X-Airtable-Sync-Code")).toBe("AIRTABLE_AUTH");
-      const logged = (console.error as unknown as { mock: { calls: unknown[][] } }).mock.calls.flat().join(" ");
-      expect(logged).toContain("BLOB_CLEANUP_FAILED");
-      expect(logged).not.toContain("blob.example");
+      expect(res.headers.get("X-Airtable-Sync-Code")).toBe("BLOB_CLEANUP_FAILED");
+      const message = decodeURIComponent(res.headers.get("X-Airtable-Sync-Message")!);
+      expect(message).toMatch(/rejected the token/);
+      expect(message).toMatch(/by hand/);
+      const errors = (console.error as unknown as { mock: { calls: unknown[][] } }).mock.calls.flat().join(" ");
+      expect(errors).toContain("BLOB_CLEANUP_FAILED");
+      expect(errors).toContain("/0-deel-INV-2026-9.pdf");
+      expect(errors).not.toContain("blob.example");
+      const infos = (console.info as unknown as { mock: { calls: unknown[][] } }).mock.calls.flat().join(" ");
+      expect(infos).not.toMatch(/removed/);
     } finally {
       stubRouteEnv();
+    }
+  });
+
+  it("a failed clean-up is recorded (mode 600) and finished at the start of the next sync", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gst-sync-"));
+    const configFile = path.join(dir, "business.json");
+    const pendingFile = path.join(dir, "pending-blob-cleanup.json");
+    fs.writeFileSync(configFile, fakeConfigJson());
+    withSync();
+    vi.stubEnv("BUSINESS_CONFIG_JSON", "");
+    vi.stubEnv("BUSINESS_CONFIG_PATH", configFile);
+    airtableStatus = 422;
+    airtableBody = { error: { type: "INVALID_VALUE_FOR_COLUMN", message: "bad value" } };
+    blob.del.mockRejectedValueOnce(new Error("cannot delete"));
+    try {
+      const first = await generate(draft());
+      expect(first.headers.get("X-Airtable-Sync-Code")).toBe("BLOB_CLEANUP_FAILED");
+      expect(decodeURIComponent(first.headers.get("X-Airtable-Sync-Message")!)).toMatch(/next sync/);
+      const uploaded = (await Promise.all(blob.put.mock.results.map((r) => r.value))).map((u: { url: string }) => u.url);
+      expect(fs.statSync(pendingFile).mode & 0o777).toBe(0o600);
+      expect(JSON.parse(fs.readFileSync(pendingFile, "utf8")).blobs.map((b: { url: string }) => b.url).sort()).toEqual([...uploaded].sort());
+
+      // Next sync: the recorded blobs are deleted first, and the record is cleared
+      airtableStatus = 200;
+      airtableBody = { records: [{ id: "recFAKE" }] };
+      const second = await generate(draft());
+      expect(second.headers.get("X-Airtable-Sync-Status")).toBe("success");
+      expect([...blob.del.mock.calls[1][0]].sort()).toEqual([...uploaded].sort());
+      expect(fs.existsSync(pendingFile)).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+      stubRouteEnv();
+      vi.stubEnv("BUSINESS_CONFIG_PATH", "");
     }
   });
 
@@ -275,7 +363,123 @@ describe("sync never leaves a partial entry", () => {
   });
 });
 
+describe("what is printed is what was reviewed", () => {
+  it("whole cents: 100.01 + 100.00 = 200.01 issues with exactly those figures; 100.005 twice is DRAFT_INVALID", async () => {
+    const ok = await generate(
+      draft({
+        deel: { lineItems: [{ description: "Fixed rate: x", amount: 100.01 }, { description: "Bonus: y", amount: 100 }], subtotal: 200.01, total: 200.01 },
+        fira: null,
+      }),
+    );
+    expect(ok.status).toBe(200);
+    const invoice = render.generatePdf.mock.calls[0][0];
+    expect(invoice.lineItems.map((l: { amount: number }) => l.amount)).toEqual([100.01, 100]);
+    expect(invoice.grandTotal).toBe(200.01);
+
+    const bad = await generate(
+      draft({
+        deel: { lineItems: [{ description: "a", amount: 100.005 }, { description: "b", amount: 100.005 }], subtotal: 200.01, total: 200.01 },
+        fira: null,
+      }),
+    );
+    const body = await bad.json();
+    expect(bad.status).toBe(422);
+    expect(body.code).toBe("DRAFT_INVALID");
+    expect(render.generatePdf).toHaveBeenCalledOnce();
+  });
+
+  it("splits the FIRA's INR across lines in whole paise, the residual on the largest line", async () => {
+    const res = await generate(
+      draft({
+        deel: {
+          lineItems: [
+            { description: "Fixed rate: x", amount: 1000 },
+            { description: "Bonus: y", amount: 1000 },
+            { description: "Other: z", amount: 1000 },
+          ],
+          subtotal: 3000,
+          total: 3000,
+        },
+        fira: { fcyAmount: 2999.99, inrAmount: 270000.01 },
+      }),
+    );
+    expect(res.status).toBe(200);
+    const amounts: number[] = render.generatePdf.mock.calls[0][0].lineItems.map((l: { amount: number }) => l.amount);
+    expect(amounts).toEqual([90000.01, 90000, 90000]);
+    for (const a of amounts) expect(Math.round(a * 100) / 100).toBe(a);
+  });
+
+  it("the reviewed client is authoritative: saved client data never fills a blank", async () => {
+    const config = JSON.parse(fakeConfigJson());
+    config.clientProfile = { clientName: "Alpha Saved Client", clientAddress: "9 Alpha Road", country: "Alphaland", vatId: "ALPHA-VAT-1" };
+    vi.stubEnv("BUSINESS_CONFIG_JSON", JSON.stringify(config));
+    try {
+      const res = await generate(
+        draft({ deel: { clientName: "Beta Reviewed Client", clientAddress: "", clientCountry: "", clientVatId: "", clientRegistrationNumber: "" }, fira: null }),
+      );
+      expect(res.status).toBe(200);
+      const invoice = render.generatePdf.mock.calls[0][0];
+      expect(invoice.client).toEqual({ clientName: "Beta Reviewed Client", clientAddress: "", country: "", vatId: "", registrationNumber: "" });
+      expect(JSON.stringify(invoice)).not.toMatch(/Alpha/);
+    } finally {
+      stubRouteEnv();
+    }
+  });
+
+  it("an invoice-number override with CR/LF is refused by the schema, in both flows", async () => {
+    const res = await generate(draft({ options: { overrideInvoiceNumber: "INV\r\nX-Evil: 1" } }));
+    const body = await res.json();
+    expect(res.status).toBe(422);
+    expect(body.issues[0]).toMatchObject({ code: "DRAFT_INVALID", field: "options.overrideInvoiceNumber" });
+
+    const legacy = await POST(await generateRequest({ file: deelPdf(), overrideInvoiceNumber: "INV\r\nX-Evil: 1" }));
+    expect(legacy.status).toBe(422);
+    expect((await legacy.json()).code).toBe("DRAFT_INVALID");
+    expect(render.generatePdf).not.toHaveBeenCalled();
+  });
+
+  it("a slash in the invoice number never reaches the filename", async () => {
+    const res = await generate(draft({ options: { overrideInvoiceNumber: "INV/2026/08" } }));
+    expect(res.headers.get("Content-Disposition")).toBe('attachment; filename="INV-2026-08-GST.pdf"');
+  });
+
+  it("a fault after the render but before the sync writes nothing", async () => {
+    withSync();
+    fault.beforeSync = true;
+    try {
+      const res = await generate(draft());
+      expect(res.status).toBe(500);
+      expect(render.generatePdf).toHaveBeenCalledOnce();
+      expect(blob.put).not.toHaveBeenCalled();
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      stubRouteEnv();
+    }
+  });
+});
+
 describe("legacy request without a draft", () => {
+  it("surfaces the currency problem of a non-USD Deel invoice", async () => {
+    const res = await POST(await generateRequest({ file: linesToPdf(deelLines({ total: ["Total", "EUR $2,000.00"] })) }));
+    expect(res.status).toBe(422);
+    expect(codes((await res.json()).issues)).toContain("DEEL_CURRENCY_UNSUPPORTED");
+  });
+
+  it("fills blank client fields from the saved client once, in the adapter", async () => {
+    const config = JSON.parse(fakeConfigJson());
+    config.clientProfile = { clientName: "Alpha Saved Client", clientAddress: "9 Alpha Road", country: "Alphaland", vatId: "ALPHA-VAT-1" };
+    vi.stubEnv("BUSINESS_CONFIG_JSON", JSON.stringify(config));
+    try {
+      const res = await POST(await generateRequest({ file: deelPdf() }));
+      expect(res.status).toBe(200);
+      const client = render.generatePdf.mock.calls[0][0].client;
+      expect(client.clientName).toBe("Acme Holdings For Testing & Research");
+      expect(client.vatId).toBe("ALPHA-VAT-1");
+    } finally {
+      stubRouteEnv();
+    }
+  });
+
   it("parses inline, goes through the same draft checks and records mode legacy", async () => {
     withSync();
     try {

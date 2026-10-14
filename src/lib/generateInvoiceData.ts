@@ -2,6 +2,7 @@ import { AppConfig, DEFAULT_SERVICE_DESCRIPTION } from "./config";
 import { selectLut } from "./configSchema";
 import type { InvoiceDraft } from "./draft";
 import { invoiceInputFromDraft, type DeelExtras } from "./draftAdapter";
+import { fromCents, isWholeCents, toCents } from "./draftValidation";
 import { issue } from "./errors";
 import { ComplianceMetadata, DeelParsedInvoice, FiraParsedData, GeneratedInvoice, ReviewRecord } from "./types";
 import { InvoiceValidationError, validateDeelData, validateGeneratedInvoice, validateSupplier } from "./validateInvoice";
@@ -16,7 +17,7 @@ export function generateInvoiceFromDraft(
   opts: { review?: ReviewRecord; extras?: DeelExtras } = {},
 ): GeneratedInvoice {
   const { deelData, overrides } = invoiceInputFromDraft(draft, opts.extras);
-  return generateInvoiceData(deelData, config, { ...overrides, review: opts.review });
+  return generateInvoiceData(deelData, config, { ...overrides, review: opts.review, clientFromDraft: true });
 }
 
 export function generateInvoiceData(
@@ -31,6 +32,8 @@ export function generateInvoiceData(
     firaSource?: "pdf" | "manual";
     /** Recorded in complianceMetadata.review */
     review?: ReviewRecord;
+    /** The client fields come from a reviewed draft: never fill them from the saved client profile */
+    clientFromDraft?: boolean;
   }
 ): GeneratedInvoice {
   const client = config.clientProfile;
@@ -44,15 +47,24 @@ export function generateInvoiceData(
   if (lutChoice.warning) warnings.push(lutChoice.warning);
   const supplier = { ...config.businessProfile, lut: lutChoice.lut || config.businessProfile.lut };
 
-  // Uploaded Deel data is the source of truth; saved config only fills gaps.
-  const finalClient = {
-    ...client,
-    clientName: deelData.clientName || client.clientName,
-    clientAddress: deelData.clientAddress || client.clientAddress,
-    country: deelData.clientCountry || client.country || "",
-    vatId: deelData.clientVatId || client.vatId || "",
-    registrationNumber: deelData.clientRegistrationNumber || client.registrationNumber || "",
-  };
+  // From a review draft the reviewed client is authoritative: a field left blank stays blank. Only the old
+  // direct signature lets saved config fill gaps (the legacy route fills them once, in draftFromParsed).
+  const finalClient = overrides?.clientFromDraft
+    ? {
+        clientName: deelData.clientName,
+        clientAddress: deelData.clientAddress,
+        country: deelData.clientCountry || "",
+        vatId: deelData.clientVatId || "",
+        registrationNumber: deelData.clientRegistrationNumber || "",
+      }
+    : {
+        ...client,
+        clientName: deelData.clientName || client.clientName,
+        clientAddress: deelData.clientAddress || client.clientAddress,
+        country: deelData.clientCountry || client.country || "",
+        vatId: deelData.clientVatId || client.vatId || "",
+        registrationNumber: deelData.clientRegistrationNumber || client.registrationNumber || "",
+      };
 
   const sacCode = overrides?.overrideHsnSac || supplier.defaultSacCode || "998392";
   const placeOfSupply = overrides?.placeOfSupply || supplier.defaultPlaceOfSupply || "Outside India";
@@ -61,19 +73,23 @@ export function generateInvoiceData(
   const periodLabel = formatPeriodShort(deelData.periodStart, deelData.periodEnd);
   const servicePeriod = deelData.periodText || "";
 
-  // Formulate Line Items
+  // Amounts are worked out in whole cents/paise and only then turned back into dollars/rupees, so every printed
+  // figure is exactly a validated one and the lines add up to the total with no floating-point drift.
   const fira = overrides?.firaData;
   const isFira = !!fira;
-  let subtotal = deelData.subtotal;
-  let grandTotal = deelData.total;
+  const totalCents = wholeCents(deelData.total, "deel.total");
+  let subtotal = fromCents(wholeCents(deelData.subtotal, "deel.subtotal"));
+  let grandTotal = fromCents(totalCents);
   let currency = deelData.currency || "USD";
+  const itemCents = deelData.lineItems.map((item, i) => wholeCents(item.amount, `deel.lineItems.${i}.amount`));
 
   // If FIRA exists, calculate exchange rate and bank charges
   let firaDerivedData: GeneratedInvoice["firaData"] = undefined;
+  let lineCents = itemCents;
   if (isFira) {
     if (
-      fira.fcyAmount <= 0 ||
-      fira.inrAmount <= 0 ||
+      !(fira.fcyAmount > 0) ||
+      !(fira.inrAmount > 0) ||
       (overrides?.firaSource !== "manual" && (!fira.firaRef || !fira.processedDate))
     ) {
       const manual = overrides?.firaSource === "manual";
@@ -90,74 +106,61 @@ export function generateInvoiceData(
       );
     }
 
-    currency = "INR";
-    grandTotal = fira.inrAmount;
-    subtotal = fira.inrAmount; // Since GST is 0, subtotal matches grandTotal
+    const fcyCents = wholeCents(fira.fcyAmount, "fira.fcyAmount");
+    const inrPaise = wholeCents(fira.inrAmount, "fira.inrAmount");
 
-    const exchangeRate = fira.inrAmount / fira.fcyAmount;
-    const bankChargesUsd = Math.max(0, deelData.total - fira.fcyAmount);
+    currency = "INR";
+    grandTotal = fromCents(inrPaise);
+    subtotal = grandTotal; // Since GST is 0, subtotal matches grandTotal
 
     firaDerivedData = {
-      originalUsdBilled: deelData.total,
-      fundsRealizedUsd: fira.fcyAmount,
-      fundsRealizedInr: fira.inrAmount,
-      bankChargesUsd,
-      exchangeRate,
+      originalUsdBilled: fromCents(totalCents),
+      fundsRealizedUsd: fromCents(fcyCents),
+      fundsRealizedInr: fromCents(inrPaise),
+      bankChargesUsd: fromCents(Math.max(0, totalCents - fcyCents)),
+      exchangeRate: inrPaise / fcyCents,
       firaRef: fira.firaRef,
       firaDate: fira.processedDate,
     };
+
+    // Each line's share of the realised INR, in paise; the residual paisa goes on the largest line so a zero-value
+    // row never goes negative and the lines add up exactly to the FIRA's INR amount.
+    lineCents = itemCents.map((c) => Math.round((inrPaise * c) / totalCents));
+    const residual = inrPaise - lineCents.reduce((a, b) => a + b, 0);
+    if (residual !== 0 && lineCents.length > 0) {
+      const largest = itemCents.reduce((best, c, i) => (c > itemCents[best] ? i : best), 0);
+      lineCents[largest] += residual;
+    }
   }
-  
+
   const firaSourceInfo = overrides?.firaSource || "pdf";
 
   // Map Deel line items → GST line items
-  const lineItems = deelData.lineItems.map((item) => {
+  const lineItems = deelData.lineItems.map((item, i) => {
     let description = item.description;
 
     // "Fixed rate: Monthly payment" → the configured service description
     if (/Fixed rate/i.test(description)) {
       description = `${supplier.defaultServiceDescription || DEFAULT_SERVICE_DESCRIPTION}${periodLabel ? ` — ${periodLabel}` : ""}`;
     }
-
-    // Convert to INR if FIRA data exists
-    let finalAmount = item.amount;
-    let finalRate = item.amount;
-
     if (isFira) {
-      // Proportion of total billing
-      const proportion = item.amount / deelData.total;
-      // Proportional distribution of the total realized INR
-      finalAmount = Math.round(fira.inrAmount * proportion * 100) / 100;
-      finalRate = finalAmount;
-      
       // Append original USD value note
-      description += `\n(Original Value: USD ${item.amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })})`;
+      description += `\n(Original Value: USD ${fromCents(itemCents[i]).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })})`;
     }
 
+    const amount = fromCents(lineCents[i]);
     return {
       description,
       sacCode,
       qty: 1,
-      rate: finalRate,
-      amount: finalAmount,
+      rate: amount,
+      amount,
       sgst: 0,
       cgst: 0,
       igst: 0,
       cess: 0,
     };
   });
-
-  // Adjust mathematically for any rounding 1-cent discrepancies on the last item for FIRA invoices
-  if (isFira && lineItems.length > 0) {
-    const sumLineItems = lineItems.reduce((acc, curr) => acc + curr.amount, 0);
-    const diff = Math.round((fira.inrAmount - sumLineItems) * 100) / 100;
-    if (diff !== 0) {
-      // Put the paisa residual on the largest line so a zero-value row never goes negative
-      const target = lineItems.reduce((best, item) => (item.amount > best.amount ? item : best), lineItems[0]);
-      target.amount = Math.round((target.amount + diff) * 100) / 100;
-      target.rate = Math.round((target.rate + diff) * 100) / 100;
-    }
-  }
 
   // LUT reference — GSTIN and FY are rendered separately in the PDF template
   const lutNumber = `Supply under LUT — Rule ${supplier.lut.rule}`;
@@ -273,6 +276,16 @@ export function generateInvoiceData(
   };
   validateGeneratedInvoice(invoice);
   return invoice;
+}
+
+/** An amount in whole cents/paise; a fraction of a cent is refused rather than rounded into something unreviewed. */
+function wholeCents(n: number, field: string): number {
+  if (!Number.isFinite(n) || !isWholeCents(n)) {
+    throw new InvoiceValidationError(
+      issue("DRAFT_INVALID", field.startsWith("fira") ? "fira" : "deel", `${field}: Use at most two decimal places.`, "Enter the amount exactly as printed, with at most two decimals.", { field }),
+    );
+  }
+  return toCents(n);
 }
 
 function buildComplianceKey(

@@ -26,14 +26,14 @@ export function draftOptions(values: Partial<Record<keyof DraftOptions, string |
 }
 
 /**
- * Legacy request → review draft. The saved client profile fills a client name or address the parser couldn't read,
- * as the one-step form always did.
+ * Legacy request → review draft. The saved client profile fills client fields the parser couldn't read, as the
+ * one-step form always did; this is the only place that happens; generation never falls back again.
  */
 export function draftFromParsed(
   deel: DeelParsedInvoice,
-  fira: { data: FiraParsedData; source: "pdf" | "manual" } | null,
+  fira: { data: FiraParsedData; source: "pdf" | "manual"; currency?: string } | null,
   options: DraftOptions,
-  fallbackClient?: Pick<ClientProfile, "clientName" | "clientAddress">,
+  fallbackClient?: Partial<Pick<ClientProfile, "clientName" | "clientAddress" | "country" | "vatId" | "registrationNumber">>,
 ): InvoiceDraft {
   return {
     deel: {
@@ -44,11 +44,11 @@ export function draftFromParsed(
       periodEnd: text(deel.periodEnd),
       clientName: text(deel.clientName) || text(fallbackClient?.clientName),
       clientAddress: text(deel.clientAddress) || text(fallbackClient?.clientAddress),
-      clientCountry: text(deel.clientCountry),
-      clientVatId: text(deel.clientVatId),
-      clientRegistrationNumber: text(deel.clientRegistrationNumber),
-      // validateDeelData has already refused anything that isn't USD
-      currency: "USD",
+      clientCountry: text(deel.clientCountry) || text(fallbackClient?.country),
+      clientVatId: text(deel.clientVatId) || text(fallbackClient?.vatId),
+      clientRegistrationNumber: text(deel.clientRegistrationNumber) || text(fallbackClient?.registrationNumber),
+      // As printed; validateDraft refuses anything but USD
+      currency: text(deel.currency) || "USD",
       lineItems: deel.lineItems.map((item) => ({ description: text(item.description), amount: item.amount })),
       subtotal: deel.subtotal,
       vat: deel.vat,
@@ -58,7 +58,8 @@ export function draftFromParsed(
     fira: fira
       ? {
           source: fira.source,
-          currency: "USD", // TODO(api agent): carry the FIRA currency
+          // As printed on the FIRA; manual entry is always USD
+          currency: text(fira.currency) || "USD",
           firaRef: text(fira.data.firaRef),
           processedDate: text(fira.data.processedDate),
           fcyAmount: fira.data.fcyAmount,

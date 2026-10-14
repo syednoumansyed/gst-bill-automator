@@ -47,6 +47,8 @@ export type GenerateOutcome = {
   blob: Blob;
   fileName: string;
   syncStatus: "success" | "skipped" | "warning" | "failed";
+  /** X-Airtable-Sync-Code, e.g. AIRTABLE_UNCERTAIN or BLOB_CLEANUP_FAILED; "" when none */
+  syncCode: string;
   syncMessage: string;
   warnings: string[];
 };
@@ -83,6 +85,7 @@ export async function generateInvoice(form: FormData): Promise<Result<GenerateOu
         blob: await res.blob(),
         fileName,
         syncStatus,
+        syncCode: res.headers.get("X-Airtable-Sync-Code") || "",
         syncMessage,
         warnings: parseWarningsHeader(res.headers.get("X-Invoice-Warnings")),
       },

@@ -10,6 +10,12 @@ import type { GenerateOutcome } from "./api";
 
 const SYNC_LABEL = { success: "Synced", skipped: "Skipped", warning: "Warning", failed: "Failed" } as const;
 
+/** Banner titles for the sync failures that need a specific next step; the message explains it. */
+const SYNC_PROBLEM_TITLE: Record<string, string> = {
+  AIRTABLE_UNCERTAIN: "Check Airtable before generating again",
+  BLOB_CLEANUP_FAILED: "Uploaded PDFs need cleaning up",
+};
+
 function Row({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-start justify-between gap-4 rounded-2xl border border-black/15 bg-[#F8F7F3] px-4 py-3">
@@ -43,7 +49,11 @@ export function DoneStep({ outcome, invoiceNumber, generatedAt, onStartOver }: {
         <Row label="Airtable status" value={SYNC_LABEL[outcome.syncStatus]} />
         <div role="status">
           {syncProblem ? (
-            <StatusBanner title="Airtable sync needs attention" description={outcome.syncMessage} variant="warning" />
+            <StatusBanner
+              title={SYNC_PROBLEM_TITLE[outcome.syncCode] ?? "Airtable sync needs attention"}
+              description={outcome.syncMessage}
+              variant="warning"
+            />
           ) : (
             <div className="rounded-2xl border border-black/20 bg-[#F8F7F3] p-4 text-sm leading-6 text-black/70">{outcome.syncMessage}</div>
           )}
