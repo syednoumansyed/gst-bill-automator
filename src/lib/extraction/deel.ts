@@ -59,6 +59,8 @@ const LABEL_NAMES: Record<string, string> = {
   supplierName: "supplier name",
   supplierAddress: "supplier address",
   deelRef: "Deel reference",
+  headerTotal: "total at the top",
+  summaryTotal: "total in the summary",
 };
 
 const unreadable = (field: string, name = LABEL_NAMES[field] ?? field) =>
@@ -72,6 +74,15 @@ const conflicting = (field: string, name = LABEL_NAMES[field] ?? field, severity
     "deel",
     `The Deel invoice shows more than one ${name}, and the app can't tell which is right.`,
     `Check the Deel PDF and enter the correct ${name} in the field below.`,
+    { field: `deel.${field}`, severity },
+  );
+
+const notFound = (field: string, severity: Issue["severity"]) =>
+  issue(
+    "DEEL_FIELD_UNREADABLE",
+    "deel",
+    `Couldn't find the ${LABEL_NAMES[field] ?? field} on the Deel invoice.`,
+    "Check the Deel PDF and fill this in if it's shown.",
     { field: `deel.${field}`, severity },
   );
 
@@ -225,10 +236,14 @@ export function extractDeelFromText(text: PdfText): DeelReading {
   // ─── Where the item table starts and ends ───
   const table = hitsFor("deel.itemTable")[0];
   const totalHits = hitsFor("deel.total");
-  const headerHits = table ? totalHits.filter((h) => !isBelow(h, table)) : totalHits.slice(0, 1);
-  const summaryHits = table ? totalHits.filter((h) => isBelow(h, table)) : totalHits.slice(1);
-  const subHits = hitsFor("deel.subtotal").filter((h) => !table || isBelow(h, table));
-  const vatHits = hitsFor("deel.vat").filter((h) => !table || isBelow(h, table));
+  const subHits = hitsFor("deel.subtotal");
+  // The summary block is Subtotal, VAT, Total, wherever it sits (normally under the items, sometimes above them):
+  // a total under the subtotal is the summary total, any other is the header total. With no subtotal on the
+  // page, a total under the item table is the summary.
+  const summaryStart = subHits[0] ?? table;
+  const headerHits = summaryStart ? totalHits.filter((h) => !isBelow(h, summaryStart)) : totalHits.slice(0, 1);
+  const summaryHits = summaryStart ? totalHits.filter((h) => isBelow(h, summaryStart)) : totalHits.slice(1);
+  const vatHits = hitsFor("deel.vat").filter((h) => !summaryStart || isBelow(h, summaryStart));
 
   // ─── Money: label strategies, then the sequential reader ───
   const moneyOpts = { skip: isPercent };
@@ -263,7 +278,8 @@ export function extractDeelFromText(text: PdfText): DeelReading {
   };
 
   // ─── Line items: rows in the table that start with a known item kind ───
-  const tableEnd = subHits[0] ?? summaryHits[0];
+  // The table ends at the first summary row under it (the summary block may also sit above the table)
+  const tableEnd = [...subHits, ...summaryHits].find((h) => !table || isBelow(h, table));
   const itemCells = text.items
     .filter((i) => LINE_ITEM_PREFIX.test(i.str) && (!table || itemBelow(i, table)) && (!tableEnd || itemAbove(i, tableEnd)))
     .sort((a, b) => a.page - b.page || b.y - a.y);
@@ -511,7 +527,17 @@ export function extractDeelFromText(text: PdfText): DeelReading {
       // Free text with no cross-check: never more than medium
       { knownLayout, needsAgreement: true, max: "medium" },
     );
-  const clientName = blockField(billTo?.clientName, legacy.clientName, "BILL TO");
+  let clientName = blockField(billTo?.clientName, legacy.clientName, "BILL TO");
+  // A name can't be cross-checked: when the name/address split is a guess, say so
+  if (clientName.value !== null && (billTo?.nameAmbiguous || (!billTo && legacy.nameAmbiguous))) {
+    clientName = { ...clientName, confidence: "low" };
+    issues.push(
+      issue("DEEL_FIELD_UNREADABLE", "deel", "The client name may be wrapped or incomplete.", "Check the client name against the Deel PDF.", {
+        field: "deel.clientName",
+        severity: "warning",
+      }),
+    );
+  }
   const clientAddress = blockField(billTo?.clientAddress, legacy.clientAddress, "BILL TO");
   const clientCountry = blockField(billTo?.clientCountry, legacy.clientCountry, "BILL TO");
   const clientVatId = blockField(billTo?.clientVatId, legacy.clientVatId, "BILL TO");
@@ -531,6 +557,24 @@ export function extractDeelFromText(text: PdfText): DeelReading {
   const flagged = new Set(issues.map((i) => i.field));
   for (const [name, f] of Object.entries(optional)) {
     if (f.source.startsWith("conflict:") && !flagged.has(`deel.${name}`)) issues.push(conflicting(name, undefined, "warning"));
+  }
+  // Never silently empty: a field Deel always prints that came back empty is flagged. A warning where the
+  // invoice maths doesn't need it, an error where it does.
+  const expected: [string, Field<unknown>, Issue["severity"]][] = [
+    ["dueDate", dueDate, "warning"],
+    ["periodStart", periodStart, "warning"],
+    ["periodEnd", periodEnd, "warning"],
+    ["deelRef", deelRef, "warning"],
+    ["clientCountry", clientCountry, "warning"],
+    ["clientAddress", clientAddress, "warning"],
+    ["vat", vat, "warning"],
+    ["headerTotal", headerTotal, summaryTotal.value !== null ? "warning" : "error"],
+    ["summaryTotal", summaryTotal, headerTotal.value !== null ? "warning" : "error"],
+    ["currency", currency, "error"],
+  ];
+  const flaggedNow = new Set(issues.map((i) => i.field));
+  for (const [name, f, severity] of expected) {
+    if (f.value === null && !flaggedNow.has(`deel.${name}`)) issues.push(notFound(name, severity));
   }
 
   const fields: DeelExtraction["fields"] = {

@@ -109,12 +109,16 @@ export function findLabels(text: PdfText, fields: LabelField[]): LabelHit[] {
     }
   }
 
-  // A label wrapped onto the next line: the lower part starts at the same x, within about a line and a half
+  // A label wrapped onto the next line or two ("Customer" / "Transaction Reference" / "No"): each lower part
+  // starts at the same x, within about a line and a half of the part above
+  const below = (a: TextItem) =>
+    text.items.filter(
+      (b) => b !== a && b.page === a.page && b.y < a.y - 1 && Math.abs(b.x - a.x) <= 4 && a.y - b.y <= 1.6 * Math.max(a.h, b.h),
+    );
   for (const a of text.items) {
-    for (const b of text.items) {
-      if (b === a || b.page !== a.page || b.y >= a.y - 1) continue;
-      if (Math.abs(b.x - a.x) > 4 || a.y - b.y > 1.6 * Math.max(a.h, b.h)) continue;
+    for (const b of below(a)) {
       consider([a, b]);
+      for (const c of below(b)) consider([a, b, c]);
     }
   }
 
