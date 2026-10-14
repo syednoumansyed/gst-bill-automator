@@ -44,6 +44,56 @@ export function linesToPdf(lines: string[]): Buffer {
   return Buffer.from(out, "latin1");
 }
 
+export interface PdfItem {
+  text: string;
+  /** Points from the left edge of the page */
+  x: number;
+  /** Points from the BOTTOM edge of the page (PDF coordinates); page height is 842 */
+  y: number;
+  /** 0-based page index; defaults to 0 */
+  page?: number;
+  size?: number;
+}
+
+/**
+ * Builds a text PDF with every item placed at its own x/y, so items can share a row (label left, value right) or sit
+ * anywhere on the page. The order of `items` is the order of the content stream, which is the order pdf.js reports
+ * them; it is independent of position, so tests can shuffle reading order without moving anything on the page.
+ * ASCII only. Existing `linesToPdf` is unchanged.
+ */
+export function itemsToPdf(items: PdfItem[]): Buffer {
+  const pageCount = Math.max(1, ...items.map((i) => (i.page ?? 0) + 1));
+  const esc = (s: string) => s.replace(/[\\()]/g, "\\$&");
+  const objects: string[] = [];
+  const fontId = 3 + pageCount * 2;
+  const pageIds = Array.from({ length: pageCount }, (_, i) => 3 + i * 2);
+
+  objects[1] = "<< /Type /Catalog /Pages 2 0 R >>";
+  objects[2] = `<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(" ")}] /Count ${pageCount} >>`;
+  pageIds.forEach((pageId, p) => {
+    const content = items
+      .filter((i) => (i.page ?? 0) === p)
+      .map((i) => `BT /F1 ${i.size ?? 11} Tf ${i.x} ${i.y} Td (${esc(i.text)}) Tj ET`)
+      .join("\n");
+    objects[pageId] =
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 ${fontId} 0 R >> >> /Contents ${pageId + 1} 0 R >>`;
+    objects[pageId + 1] = `<< /Length ${Buffer.byteLength(content)} >>\nstream\n${content}\nendstream`;
+  });
+  objects[fontId] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>";
+
+  let out = "%PDF-1.4\n";
+  const offsets: number[] = [];
+  for (let id = 1; id < objects.length; id++) {
+    offsets[id] = Buffer.byteLength(out);
+    out += `${id} 0 obj\n${objects[id]}\nendobj\n`;
+  }
+  const xref = Buffer.byteLength(out);
+  out += `xref\n0 ${objects.length}\n0000000000 65535 f \n`;
+  for (let id = 1; id < objects.length; id++) out += `${String(offsets[id]).padStart(10, "0")} 00000 n \n`;
+  out += `trailer\n<< /Size ${objects.length} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(out, "latin1");
+}
+
 /** All text of a PDF, one text item per line (the same view the parsers get). */
 export async function pdfTextLines(buffer: Buffer): Promise<string[]> {
   const doc = await getDocument({ data: new Uint8Array(buffer) }).promise;

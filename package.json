@@ -10,9 +10,11 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "vitest run",
+    "test": "vitest run --project unit --project chromium",
     "test:fast": "vitest run --project unit",
     "test:chromium": "vitest run --project chromium",
+    "test:regression": "vitest run --project regression",
+    "test:private": "vitest run --project private",
     "scan:pii": "node scripts/scan-pii.mjs"
   },
   "dependencies": {
