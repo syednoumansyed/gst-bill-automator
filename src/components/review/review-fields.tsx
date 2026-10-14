@@ -64,6 +64,7 @@ export function FiraGroup() {
           <FieldRow path="fira.processedDate" label="Processed date" placeholder="DD-MM-YYYY or YYYY-MM-DD" hint={manual ? "Entered manually" : undefined} />
           <FieldRow path="fira.fcyAmount" label="USD received" kind="amount" hint={manual ? "Entered manually" : undefined} />
           <FieldRow path="fira.inrAmount" label="INR amount" kind="amount" hint={manual ? "Entered manually" : undefined} />
+          {!manual && <FieldRow path="fira.currency" label="Currency" placeholder="USD" hint="Only USD remittances are supported" />}
         </Grid>
       ) : (
         <p className="rounded-2xl border-2 border-dashed border-black/30 bg-[#F8F7F3] p-4 text-sm leading-6 text-black/70">

@@ -26,7 +26,8 @@ const blank = (s: unknown) => typeof s !== "string" || s.trim() === "";
  * Amounts are reconciled in whole cents/paise, never in floating point, so the figures that pass are exactly the
  * figures printed. An amount with a fraction of a cent is refused (the draft schema refuses it too).
  */
-export const isWholeCents = (n: number) => Math.abs(n * 100 - Math.round(n * 100)) < 1e-6;
+// Exact: the value must be what its own two-decimal rendering parses back to (n * 100 drifts for large amounts)
+export const isWholeCents = (n: number) => Number.isFinite(n) && Number(n.toFixed(2)) === n;
 export const toCents = (n: number) => Math.round(n * 100);
 export const fromCents = (c: number) => c / 100;
 
@@ -233,7 +234,15 @@ function draftFiraIssues(draft: InvoiceDraft): Issue[] {
 
   // The draft schema defaults the FIRA currency to USD; anything else can't be paired with a USD Deel invoice
   const firaCurrency = fira.currency ?? "USD";
-  if (!isCurrency(firaCurrency, "USD")) {
+  if (!String(firaCurrency).trim()) {
+    // Never assumed: the user confirms it in the review form after checking the PDF
+    unreadable(
+      "fira.currency",
+      "currency",
+      "Check the FCY currency on the FIRA PDF. If it's USD, type USD in the Currency field.",
+      "Type USD in the Currency field.",
+    );
+  } else if (!isCurrency(firaCurrency, "USD")) {
     out.push(
       issue(
         "FIRA_CURRENCY_UNSUPPORTED",

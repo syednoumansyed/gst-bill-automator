@@ -135,7 +135,13 @@ async function fromLegacyForm(form: FormData): Promise<Prepared> {
   const reading = await readDeel(deelPdf);
   const firaExtraction = firaPdf ? await extractFira(firaPdf) : null;
   const currencyIssues = [...reading.extraction.issues, ...(firaExtraction?.issues ?? [])].filter(
-    (i) => i.severity === "error" && (i.code === "DEEL_CURRENCY_UNSUPPORTED" || i.code === "FIRA_CURRENCY_UNSUPPORTED"),
+    (i) =>
+      i.severity === "error" &&
+      (i.code === "DEEL_CURRENCY_UNSUPPORTED" ||
+        i.code === "FIRA_CURRENCY_UNSUPPORTED" ||
+        // An unresolved currency (e.g. a FIRA printing both USD and EUR) blocks too; it's never assumed to be USD
+        i.field === "deel.currency" ||
+        i.field === "fira.currency"),
   );
   if (currencyIssues.length > 0) throw new IssueError(currencyIssues);
 

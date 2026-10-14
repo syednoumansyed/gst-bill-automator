@@ -10,7 +10,8 @@ const money = z
   .number()
   .finite()
   .nonnegative()
-  .refine((n) => Math.abs(n * 100 - Math.round(n * 100)) < 1e-6, "Use at most two decimal places.");
+  // Exact check: n * 100 drifts for large amounts (134217728.02 * 100 = 13421772802.000002)
+  .refine((n) => Number(n.toFixed(2)) === n, "Use at most two decimal places.");
 const text = z.string().trim().max(500);
 
 export const draftLineItemSchema = z.object({

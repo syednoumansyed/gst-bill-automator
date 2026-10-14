@@ -58,8 +58,8 @@ export function draftFromParsed(
     fira: fira
       ? {
           source: fira.source,
-          // As printed on the FIRA; manual entry is always USD
-          currency: text(fira.currency) || "USD",
+          // As printed on the FIRA, never assumed (validateDraft refuses anything but USD); manual entry is USD
+          currency: fira.source === "manual" ? "USD" : text(fira.currency),
           firaRef: text(fira.data.firaRef),
           processedDate: text(fira.data.processedDate),
           fcyAmount: fira.data.fcyAmount,

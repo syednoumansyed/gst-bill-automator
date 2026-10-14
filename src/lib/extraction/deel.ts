@@ -16,6 +16,13 @@ import {
   type Resolved,
 } from "./strategies";
 import { sequentialLines, type PdfText, type TextItem } from "./text";
+
+// Currency codes the foreign-amount check recognises (ISO 4217, the ones contractors are commonly paid in)
+const ISO_CURRENCIES = new Set([
+  "USD", "EUR", "GBP", "INR", "AED", "SAR", "QAR", "SGD", "CAD", "AUD", "NZD", "JPY", "CNY", "HKD", "CHF",
+  "SEK", "NOK", "DKK", "PLN", "CZK", "HUF", "ZAR", "BRL", "MXN", "ARS", "ILS", "TRY", "KRW", "MYR", "THB",
+  "IDR", "PHP", "VND", "PKR", "BDT", "LKR", "NGN", "KES", "EGP", "RON", "BGN", "UAH",
+]);
 import type { DeelExtraction, DeelLineItem, DocKind, Field, LayoutMatch } from "./types";
 
 /**
@@ -444,7 +451,8 @@ export function extractDeelFromText(text: PdfText): DeelReading {
     row.items.forEach((item, i) => {
       for (const t of [item.str, `${item.str} ${row.items[i + 1]?.str ?? ""}`]) {
         const m = parseMoney(t);
-        if (m && m.currency !== "INV") printed.add(m.currency);
+        // Only real currency codes: "SAC 998392" or "USA 10001" are not foreign amounts
+        if (m && ISO_CURRENCIES.has(m.currency)) printed.add(m.currency);
       }
     });
   }

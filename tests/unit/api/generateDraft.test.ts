@@ -216,13 +216,26 @@ describe("sync never leaves a partial entry", () => {
     }
   });
 
-  it("an error status with an unreadable body is still a definite rejection: uploads deleted", async () => {
+  it("a 4xx with an unreadable body is still a definite rejection: uploads deleted", async () => {
     withSync();
-    fetchSpy.mockResolvedValue(new Response("<html>bad gateway", { status: 502 }));
+    fetchSpy.mockResolvedValue(new Response("<html>bad request", { status: 400 }));
     try {
       const res = await generate(draft());
       expect(res.headers.get("X-Airtable-Sync-Code")).toBe("AIRTABLE_REJECTED");
       expect(blob.del).toHaveBeenCalledOnce();
+    } finally {
+      stubRouteEnv();
+    }
+  });
+
+  it("a 5xx doesn't prove nothing was saved: Airtable is checked, and the uploads are kept while unsure", async () => {
+    withSync();
+    fetchSpy.mockResolvedValue(new Response("<html>bad gateway", { status: 502 }));
+    try {
+      const res = await generate(draft());
+      expect(res.headers.get("X-Airtable-Sync-Code")).toBe("AIRTABLE_UNCERTAIN");
+      expect(fetchSpy.mock.calls.length).toBeGreaterThan(1); // the write, then the check
+      expect(blob.del).not.toHaveBeenCalled();
     } finally {
       stubRouteEnv();
     }
@@ -249,8 +262,10 @@ describe("sync never leaves a partial entry", () => {
     }
   });
 
-  it("a failed clean-up with read-only config: BLOB_CLEANUP_FAILED, told to delete by hand, logged by code and pathname", async () => {
+  it("a failed clean-up with read-only config: BLOB_CLEANUP_FAILED, recorded in GST_DATA_DIR, logged by code and pathname", async () => {
     withSync();
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "gst-data-"));
+    vi.stubEnv("GST_DATA_DIR", dataDir);
     airtableStatus = 401;
     airtableBody = { error: { type: "AUTHENTICATION_REQUIRED", message: "Authentication required" } };
     blob.del.mockRejectedValue(new Error("cannot delete"));
@@ -260,7 +275,7 @@ describe("sync never leaves a partial entry", () => {
       expect(res.headers.get("X-Airtable-Sync-Code")).toBe("BLOB_CLEANUP_FAILED");
       const message = decodeURIComponent(res.headers.get("X-Airtable-Sync-Message")!);
       expect(message).toMatch(/rejected the token/);
-      expect(message).toMatch(/by hand/);
+      expect(fs.statSync(path.join(dataDir, "pending-blob-cleanup.json")).mode & 0o777).toBe(0o600);
       const errors = (console.error as unknown as { mock: { calls: unknown[][] } }).mock.calls.flat().join(" ");
       expect(errors).toContain("BLOB_CLEANUP_FAILED");
       expect(errors).toContain("/0-deel-INV-2026-9.pdf");
@@ -268,6 +283,7 @@ describe("sync never leaves a partial entry", () => {
       const infos = (console.info as unknown as { mock: { calls: unknown[][] } }).mock.calls.flat().join(" ");
       expect(infos).not.toMatch(/removed/);
     } finally {
+      fs.rmSync(dataDir, { recursive: true, force: true });
       stubRouteEnv();
     }
   });

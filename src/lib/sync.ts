@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { del, put } from "@vercel/blob";
 import { configFilePath, isConfigReadOnly, type AppConfig } from "./config";
@@ -157,7 +158,7 @@ async function deleteBlobs(urls: string[], token: string): Promise<"deleted" | "
     await del(urls, { token });
     return "deleted";
   } catch {
-    const recorded = recordPendingCleanup(urls);
+    const recorded = await recordPendingCleanup(urls);
     console.error(`[sync] BLOB_CLEANUP_FAILED recorded=${recorded} pathnames=${urls.map(pathnameOf).join(",")}`);
     return recorded ? "recorded" : "lost";
   }
@@ -175,7 +176,25 @@ const pathnameOf = (url: string) => {
 
 type PendingCleanup = { blobs: { url: string; recordedAt: string }[] };
 
-const pendingCleanupPath = () => path.join(path.dirname(configFilePath()), PENDING_CLEANUP_FILE);
+const mayHaveCommitted = (status: number) => status >= 500 || status === 408 || status === 429;
+
+/**
+ * Next to business.json; with an env-supplied (read-only) config, in GST_DATA_DIR or the temp folder instead,
+ * so a failed clean-up is always recorded somewhere it can be retried from.
+ */
+const pendingCleanupPath = () =>
+  isConfigReadOnly()
+    ? path.join(process.env.GST_DATA_DIR || os.tmpdir(), PENDING_CLEANUP_FILE)
+    : path.join(path.dirname(configFilePath()), PENDING_CLEANUP_FILE);
+
+// One read-modify-write of the recovery file at a time, so concurrent syncs can't drop each other's records.
+// (The app runs as a single Node process; several processes would need a file lock.)
+let journalLock: Promise<unknown> = Promise.resolve();
+function withJournalLock<T>(fn: () => T | Promise<T>): Promise<T> {
+  const run = journalLock.then(fn, fn);
+  journalLock = run.catch(() => undefined);
+  return run;
+}
 
 function readPendingCleanup(): PendingCleanup {
   try {
@@ -204,19 +223,20 @@ function writePendingCleanup(pending: PendingCleanup): boolean {
   }
 }
 
-/** Adds URLs to the recovery file. Not possible in share mode or with a read-only (env-supplied) config. */
-function recordPendingCleanup(urls: string[]): boolean {
-  if (isShareMode() || isConfigReadOnly()) return false;
-  const pending = readPendingCleanup();
-  const known = new Set(pending.blobs.map((b) => b.url));
-  const recordedAt = new Date().toISOString();
-  for (const url of urls) if (!known.has(url)) pending.blobs.push({ url, recordedAt });
-  return writePendingCleanup(pending);
+/** Adds URLs to the recovery file. Share mode never uploads, so there is nothing to record there. */
+function recordPendingCleanup(urls: string[]): Promise<boolean> {
+  if (isShareMode()) return Promise.resolve(false);
+  return withJournalLock(() => {
+    const pending = readPendingCleanup();
+    const known = new Set(pending.blobs.map((b) => b.url));
+    const recordedAt = new Date().toISOString();
+    for (const url of urls) if (!known.has(url)) pending.blobs.push({ url, recordedAt });
+    return writePendingCleanup(pending);
+  });
 }
 
 /** Finishes deletions an earlier sync couldn't; on failure they stay recorded for the next one. */
 async function retryPendingCleanup(token: string): Promise<void> {
-  if (isConfigReadOnly()) return;
   const urls = readPendingCleanup().blobs.map((b) => b.url);
   if (urls.length === 0) return;
   try {
@@ -225,9 +245,9 @@ async function retryPendingCleanup(token: string): Promise<void> {
     console.error(`[sync] BLOB_CLEANUP_FAILED retry pathnames=${urls.map(pathnameOf).join(",")}`);
     return;
   }
-  // Re-read so URLs recorded meanwhile by another request are kept
+  // Re-read under the lock so URLs recorded meanwhile by another request are kept
   const done = new Set(urls);
-  writePendingCleanup({ blobs: readPendingCleanup().blobs.filter((b) => !done.has(b.url)) });
+  await withJournalLock(() => writePendingCleanup({ blobs: readPendingCleanup().blobs.filter((b) => !done.has(b.url)) }));
   console.info(`[sync] pending clean-up finished count=${urls.length}`);
 }
 
@@ -262,13 +282,15 @@ async function writeAirtableRow(
   let res = await upsert(airtable, { ...legacyFields, ...complianceFields, ...attachments });
   if (res === null) return (await rowWasWritten(airtable, invoice)) ? "written" : "uncertain";
   if (res.ok) return "written";
+  // A 5xx, 408 or 429 doesn't prove nothing was saved (a proxy can fail after Airtable committed): check first
+  if (mayHaveCommitted(res.status)) return (await rowWasWritten(airtable, invoice)) ? "written" : "uncertain";
 
   let error = await readJsonSafely(res);
   if (hasUnknownFieldError(error)) {
     console.warn("[sync] AIRTABLE_SCHEMA; retrying with the legacy fields only");
     // The legacy fields carry no "Generated At", so an unanswered retry can't be confirmed: it stays uncertain
     res = await upsert(airtable, { ...legacyFields, ...attachments });
-    if (res === null) return "uncertain";
+    if (res === null || mayHaveCommitted(res.status)) return "uncertain";
     if (res.ok) return "written";
     error = await readJsonSafely(res);
   }

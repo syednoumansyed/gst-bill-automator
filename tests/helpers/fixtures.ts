@@ -125,6 +125,7 @@ export function firaLines(o: { fcy?: string; inr?: string; ref?: string; date?: 
   return [
     "FOREIGN INWARD REMITTANCE CERTIFICATE",
     "Customer Transaction Reference No", `: ${o.ref ?? "SYNTHREF0001"}`,
+    "Currency", ": USD",
     "Processed Date", `: ${o.date ?? "25-08-2026"}`,
     "FCY Amount", `: ${o.fcy ?? "1995.00"}`,
     "INR Amount", `: ${o.inr ?? "179955.00"}`,
