@@ -10,7 +10,9 @@ import {
 } from "@/lib/apiRequest";
 import { getConfig } from "@/lib/config";
 import { sortIssues, validateDraft } from "@/lib/draftValidation";
-import { issue, type Issue } from "@/lib/errors";
+import { issue, IssueError, type Issue } from "@/lib/errors";
+import type { InvoiceDraft } from "@/lib/draft";
+import { manualFira, readManualFiraInput } from "@/lib/manualFira";
 import { draftFromExtractions, extractDeel, extractFira, layoutSkeleton } from "@/lib/extraction";
 import type { DeelExtraction, DocKind, FiraExtraction } from "@/lib/extraction/types";
 
@@ -37,9 +39,11 @@ export async function POST(req: NextRequest) {
     }
 
     const draft = draftFromExtractions(deel, fira);
+    const manualIssues = firaPdf ? [] : applyManualFira(form, draft);
     const issues = sortIssues([
       ...deel.issues,
       ...(fira?.issues ?? []),
+      ...manualIssues,
       ...validateDraft(draft, getConfig().businessProfile),
     ]);
     const skeleton = issues.length > 0 ? await skeletons(deelPdf, firaPdf) : null;
@@ -100,5 +104,29 @@ async function skeletons(deelPdf: Buffer, firaPdf: Buffer | null): Promise<{ dee
   } catch {
     console.warn("[parse] SKELETON_FAILED");
     return null;
+  }
+}
+
+/**
+ * Manual FIRA entry (no FIRA PDF): fills draft.fira from the receipt figures. A problem with them becomes an issue on
+ * the review form rather than a failed request, with whatever was entered kept for the user to correct.
+ */
+function applyManualFira(form: FormData, draft: InvoiceDraft): Issue[] {
+  let input;
+  try {
+    input = readManualFiraInput(form);
+  } catch (error) {
+    if (error instanceof IssueError) return error.issues;
+    throw error;
+  }
+  if (!input) return [];
+  try {
+    const fira = manualFira(draft.deel.total, input);
+    draft.fira = { source: "manual", ...fira };
+    return [];
+  } catch (error) {
+    if (!(error instanceof IssueError)) throw error;
+    draft.fira = { source: "manual", firaRef: input.ref, processedDate: input.date, fcyAmount: input.receivedUsd ?? 0, inrAmount: 0 };
+    return error.issues;
   }
 }

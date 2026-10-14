@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
+import { manualFira, readManualFiraInput } from "@/lib/manualFira";
 import { checkUploadRequest, readDeelPdf, readForm, readPdfField, routeErrorResponse } from "@/lib/apiRequest";
 import { AppConfig, getConfig } from "@/lib/config";
 import { invoiceDraftSchema, type InvoiceDraft } from "@/lib/draft";
@@ -127,9 +128,7 @@ const documentOfPath = (field: string): IssueDocument =>
 // ─── Legacy one-step form ─────────────────────────────────────────────────────
 
 async function fromLegacyForm(form: FormData): Promise<Prepared> {
-  const manualFiraReceivedUsd = parseFormattedNumber(form.get("manualFiraReceivedUsd"), "USD received", "fira.fcyAmount");
-  const manualFiraRate = parseFormattedNumber(form.get("manualFiraRate"), "Exchange rate", "fira.inrAmount");
-  const manualFiraBankCharges = parseFormattedNumber(form.get("manualFiraBankCharges"), "Fee", "fira.inrAmount") ?? 0;
+  const manualInput = readManualFiraInput(form);
 
   const deelPdf = await readDeelPdf(form);
   const firaPdf = await readPdfField(form, "firaFile", "The FIRA");
@@ -143,11 +142,8 @@ async function fromLegacyForm(form: FormData): Promise<Prepared> {
   let fira: { data: FiraParsedData; source: "pdf" | "manual" } | null = null;
   if (firaPdf) {
     fira = { data: await parseFiraPdf(firaPdf), source: "pdf" };
-  } else if (manualFiraRate !== null || manualFiraReceivedUsd !== null) {
-    fira = {
-      data: manualFira(deel.total, manualFiraReceivedUsd, manualFiraRate, manualFiraBankCharges, form.get("manualFiraRef"), form.get("manualFiraDate")),
-      source: "manual",
-    };
+  } else if (manualInput) {
+    fira = { data: manualFira(deel.total, manualInput), source: "manual" };
   }
 
   const options = draftOptions({
@@ -170,60 +166,6 @@ const formText = (form: FormData, name: string) => {
   const value = form.get(name);
   return typeof value === "string" ? value : "";
 };
-
-const manualIssue = (message: string, field: string, action: string) =>
-  new IssueError(issue("MANUAL_FIRA_INVALID", "fira", message, action, { field }));
-
-// Strict: "90garbage", "-90" or "1e3" are rejected instead of being read as something else
-function parseFormattedNumber(val: FormDataEntryValue | null, label: string, field: string): number | null {
-  if (val === null || (typeof val === "string" && val.trim() === "")) return null;
-  const text = typeof val === "string" ? val.trim() : "";
-  if (!/^(\d{1,3}(,\d{3})+|\d+)(\.\d+)?$/.test(text)) {
-    throw manualIssue(`${label} must be a positive number.`, field, `Enter the ${label.toLowerCase()} as a plain number, e.g. 1995.00.`);
-  }
-  return parseFloat(text.replace(/,/g, ""));
-}
-
-/**
- * Manual FIRA from a payment receipt (e.g. Skydo): net INR = USD received × rate − fee, and the realised USD is
- * backed out of it at the same rate. The date defaults to today; validateDraft checks it like any FIRA date.
- */
-function manualFira(
-  deelTotal: number,
-  receivedUsd: number | null,
-  rate: number | null,
-  feeInr: number,
-  ref: FormDataEntryValue | null,
-  date: FormDataEntryValue | null,
-): FiraParsedData {
-  if (!rate || !receivedUsd) {
-    throw manualIssue(
-      "Manual FIRA entry needs both the USD received and the exchange rate.",
-      rate ? "fira.fcyAmount" : "fira.inrAmount",
-      "Enter both the USD received and the exchange rate from your payment receipt.",
-    );
-  }
-  // Same pairing rule as an uploaded FIRA: received ≤ billed, and at most $100 lost in transit
-  const transitLoss = deelTotal - receivedUsd;
-  if (transitLoss < 0 || transitLoss > 100) {
-    throw manualIssue(
-      `USD received (${receivedUsd}) doesn't match the Deel total (${deelTotal}); it should be at most $100 less.`,
-      "fira.fcyAmount",
-      "Check the USD received on your payment receipt, and that it is for this Deel invoice.",
-    );
-  }
-  const netInr = receivedUsd * rate - feeInr;
-  if (!(netInr > 0)) {
-    throw manualIssue("The fee is larger than the converted amount.", "fira.inrAmount", "Check the fee and the exchange rate on your payment receipt.");
-  }
-  const dateText = typeof date === "string" ? date.trim() : "";
-  return {
-    fcyAmount: Math.round((netInr / rate) * 100) / 100,
-    inrAmount: Math.round(netInr * 100) / 100,
-    firaRef: typeof ref === "string" ? ref.trim() : "",
-    processedDate: dateText || new Date().toISOString().split("T")[0],
-  };
-}
 
 // ─── Compliance record ────────────────────────────────────────────────────────
 
