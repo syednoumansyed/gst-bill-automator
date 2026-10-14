@@ -65,23 +65,33 @@ export async function parseFiraPdf(buffer: Buffer): Promise<FiraParsedData> {
   // "INR Amount"
   // ": 180174.04"
 
+  // The value is the next ": …" line. Since Oct 2026 the bank wraps "Customer Transaction Reference No"
+  // so "No" arrives as its own line before the value; skip it.
+  const valueAfter = (i: number): string => {
+    for (let j = i + 1; j <= i + 3 && j < lines.length; j++) {
+      if (/^No\.?$/i.test(lines[j])) continue;
+      return lines[j].startsWith(":") ? lines[j].replace(/^:/, "").trim() : "";
+    }
+    return "";
+  };
+
   for (let i = 0; i < lines.length; i++) {
     const l = lines[i];
 
-    if (l === "Customer Transaction Reference No" || l.includes("Transaction Reference No")) {
-      const val = lines[i + 1]?.replace(/^:/, "").trim();
+    if (/Transaction Reference( No\.?)?$/i.test(l)) {
+      const val = valueAfter(i);
       if (val) data.firaRef = val;
-    } 
-    else if (l === "Processed Date" || l.includes("Processed Date")) {
-      const val = lines[i + 1]?.replace(/^:/, "").trim();
+    }
+    else if (l.includes("Processed Date")) {
+      const val = valueAfter(i);
       if (val) data.processedDate = val;
-    } 
-    else if (l === "FCY Amount" || l.includes("FCY Amount")) {
-      const val = lines[i + 1]?.replace(/^:/, "").trim();
+    }
+    else if (l.includes("FCY Amount")) {
+      const val = valueAfter(i);
       if (val) data.fcyAmount = parseFloat(val.replace(/,/g, ""));
-    } 
-    else if (l === "INR Amount" || l.includes("INR Amount")) {
-      const val = lines[i + 1]?.replace(/^:/, "").trim();
+    }
+    else if (l.includes("INR Amount")) {
+      const val = valueAfter(i);
       if (val) data.inrAmount = parseFloat(val.replace(/,/g, ""));
     }
   }

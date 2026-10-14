@@ -96,3 +96,12 @@ describe("POST /api/generate: nothing leaves the machine", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
+
+describe("POST /api/generate: unreadable FIRA", () => {
+  it("422 naming the FIRA field it couldn't read", async () => {
+    const fira = linesToPdf(firaLines().filter((l) => !l.startsWith(": SYNTHREF")));
+    const { res, body } = await post({ file: linesToPdf(deelLines()), firaFile: fira });
+    expect(res.status).toBe(422);
+    expect(body.error).toMatch(/reference number/);
+  });
+});

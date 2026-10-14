@@ -31,3 +31,21 @@ describe("parseFiraPdf", () => {
     expect(f.firaRef).toBe("");
   });
 });
+
+describe("parseFiraPdf: October 2026 layout", () => {
+  // The bank now wraps the label: "Customer Transaction Reference" / "No" / ": <ref>"
+  it("reads the reference when the label is split across lines", async () => {
+    const lines = firaLines().flatMap((l) => (l === "Customer Transaction Reference No" ? ["Customer Transaction Reference", "No"] : [l]));
+    const fira = await parseFiraPdf(linesToPdf(lines));
+    expect(fira.firaRef).toBe("SYNTHREF0001");
+    expect(fira.processedDate).toBe("25-08-2026");
+    expect(fira.fcyAmount).toBe(1995);
+    expect(fira.inrAmount).toBe(179955);
+  });
+
+  it("doesn't take the next label as the reference when the value is missing", async () => {
+    const lines = firaLines().filter((l) => !l.startsWith(": SYNTHREF"));
+    const fira = await parseFiraPdf(linesToPdf(lines));
+    expect(fira.firaRef).toBe("");
+  });
+});

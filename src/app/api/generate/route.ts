@@ -84,6 +84,17 @@ export async function POST(req: NextRequest) {
       firaBufferForUpload = Buffer.from(firaBuffer);
       assertPdfUpload(firaBufferForUpload, "The FIRA");
       firaData = await parseFiraPdf(firaBufferForUpload);
+      const unread = [
+        !(firaData.fcyAmount > 0) && "USD amount",
+        !(firaData.inrAmount > 0) && "INR amount",
+        !firaData.firaRef && "reference number",
+        !firaData.processedDate && "processed date",
+      ].filter(Boolean);
+      if (unread.length > 0) {
+        throw new InvoiceValidationError(
+          `Couldn't read the FIRA's ${unread.join(", ")}. Check it's the bank's FIRA PDF; if the bank changed its layout, enter the FIRA details manually.`,
+        );
+      }
 
       // Validation: Prevent accidental uploads of mismatched FIRA and Deel PDFs
       if (deelData.issueDate && firaData.processedDate) {

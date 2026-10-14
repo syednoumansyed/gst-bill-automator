@@ -1,7 +1,7 @@
 import { AppConfig, DEFAULT_SERVICE_DESCRIPTION } from "./config";
 import { selectLut } from "./configSchema";
 import { ComplianceMetadata, DeelParsedInvoice, FiraParsedData, GeneratedInvoice } from "./types";
-import { validateDeelData, validateGeneratedInvoice, validateSupplier } from "./validateInvoice";
+import { InvoiceValidationError, validateDeelData, validateGeneratedInvoice, validateSupplier } from "./validateInvoice";
 
 export function generateInvoiceData(
   deelData: DeelParsedInvoice,
@@ -58,7 +58,7 @@ export function generateInvoiceData(
       fira.inrAmount <= 0 ||
       (overrides?.firaSource !== "manual" && (!fira.firaRef || !fira.processedDate))
     ) {
-      throw new Error("FIRA data is incomplete. Please upload a valid FIRA PDF or fill out the required manual fields.");
+      throw new InvoiceValidationError("FIRA data is incomplete. Please upload a valid FIRA PDF or fill out the required manual fields.");
     }
 
     currency = "INR";
