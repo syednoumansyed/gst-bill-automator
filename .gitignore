@@ -56,3 +56,6 @@ next-env.d.ts
 
 # local agent worktrees and tooling
 /.claude/
+
+# real documents for local regression tests; never committed
+/fixtures-private/

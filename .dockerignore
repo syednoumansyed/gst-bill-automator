@@ -29,3 +29,4 @@ npm-debug.log*
 Dockerfile
 docker-compose.yml
 docs
+fixtures-private
