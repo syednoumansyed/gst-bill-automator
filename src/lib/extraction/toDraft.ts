@@ -21,8 +21,8 @@ export function draftFromExtractions(deel: DeelExtraction, fira: FiraExtraction 
       clientCountry: s(d.clientCountry),
       clientVatId: s(d.clientVatId),
       clientRegistrationNumber: s(d.clientRegistrationNumber),
-      // Only USD invoices are issued; another currency is flagged by the issues and by validation
-      currency: "USD",
+      // As printed; only USD invoices are issued, and another currency is flagged by the issues and by validation
+      currency: s(d.currency),
       lineItems: deel.lineItems.map((item) => ({ description: item.description, amount: n(item.amount) })),
       subtotal: n(d.subtotal),
       vat: n(d.vat),
@@ -32,7 +32,7 @@ export function draftFromExtractions(deel: DeelExtraction, fira: FiraExtraction 
     fira: fira
       ? {
           source: "pdf",
-          currency: "USD", // TODO(engine agent): carry the extracted FIRA currency
+          currency: s(fira.fields.currency),
           firaRef: s(fira.fields.firaRef),
           processedDate: s(fira.fields.processedDate),
           fcyAmount: n(fira.fields.fcyAmount),

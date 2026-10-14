@@ -10,7 +10,9 @@ import type { FiraExtraction, Field } from "./types";
  * - a header or summary total whose label is there but whose amount can't be read is NaN (validation rejects it),
  *   and undefined when the label is absent;
  * - the subtotal is NaN when missing; VAT is 0 when there is no VAT row and NaN when it can't be read;
- * - a guess from value shape alone (no label) is never passed on: it needs the review form.
+ * - a guess from value shape alone (no label) is never passed on: it needs the review form;
+ * - `sourceCurrencies` carries the currency of every amount read, items included, and any other currency printed
+ *   on the page, so validation never misses a currency the engine flagged.
  */
 
 const usable = <T>(f: Field<T>): T | null => (f.value !== null && !f.source.startsWith("pattern:") ? f.value : null);
@@ -22,7 +24,10 @@ function amount(f: Field<number>, whenAbsent: number | undefined): number | unde
   return labelWasFound(f) ? NaN : whenAbsent;
 }
 
-export function toDeelParsed({ extraction, currencyOf }: DeelReading): DeelParsedInvoice {
+/** Every currency the engine saw, so validation refuses a foreign amount even where no field was read from it. */
+const withForeign = (read: string[], foreign: string[]) => [...read, ...foreign.filter((c) => !read.includes(c))];
+
+export function toDeelParsed({ extraction, currencyOf, itemCurrencies = [], foreignCurrencies = [] }: DeelReading): DeelParsedInvoice {
   const f = extraction.fields;
   const headerTotal = amount(f.headerTotal, undefined);
   const summaryTotal = amount(f.summaryTotal, undefined);
@@ -50,7 +55,13 @@ export function toDeelParsed({ extraction, currencyOf }: DeelReading): DeelParse
     total: summaryTotal ?? headerTotal ?? 0,
     headerTotal,
     summaryTotal,
-    sourceCurrencies: (["header", "summary", "subtotal", "vat"] as const).flatMap((k) => (currencyOf[k] ? [currencyOf[k]!] : [])),
+    sourceCurrencies: withForeign(
+      [
+        ...(["header", "summary", "subtotal", "vat"] as const).flatMap((k) => (currencyOf[k] ? [currencyOf[k]!] : [])),
+        ...itemCurrencies.filter((c): c is string => c !== null),
+      ],
+      foreignCurrencies,
+    ),
     lineItems: extraction.lineItems.map((item) => ({ description: item.description, amount: usable(item.amount) ?? NaN })),
     deelRef: str(f.deelRef),
   };

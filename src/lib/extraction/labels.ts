@@ -50,7 +50,10 @@ export const STRUCTURAL_LABELS = [
   "FORM GST RFD-11", "Letter of Undertaking", "Date",
 ];
 
-/** Lowercase letters and digits only, with a trailing "No" / "No." / "#" / ":" dropped. */
+/**
+ * Lowercase letters and digits (of any script) only, with a trailing "No" / "No." / "#" / ":" dropped. Letters
+ * and digits are never thrown away, so "Remitter Name 李明" can't pass for the label "Remitter Name".
+ */
 export function labelKey(text: string): string {
   const tokens = text.trim().split(/\s+/);
   while (tokens.length > 1 && /^(?:no\.?|#|:)$/i.test(tokens[tokens.length - 1])) tokens.pop();
@@ -58,7 +61,7 @@ export function labelKey(text: string): string {
   last = last.replace(/(?:#|:|\.)+$/, "");
   if (tokens.length > 1 && /^no\.?$/i.test(last)) tokens.pop();
   else tokens[tokens.length - 1] = last;
-  return tokens.join("").toLowerCase().replace(/[^a-z0-9]/g, "");
+  return tokens.join("").toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
 }
 
 const keyIndex = new Map<string, { field: LabelField; synonym: Synonym }[]>();
@@ -70,7 +73,7 @@ for (const [field, synonyms] of Object.entries(LABELS) as [LabelField, Synonym[]
     if (!entries.some((e) => e.field === field)) keyIndex.set(key, [...entries, { field, synonym }]);
   }
 }
-const structuralKeys = new Set(STRUCTURAL_LABELS.map(labelKey));
+const structuralKeys = new Map(STRUCTURAL_LABELS.map((text) => [labelKey(text), text]));
 
 /** Fields whose synonym is exactly this text (after normalising). */
 export function fieldsForLabel(text: string): { field: LabelField; synonym: Synonym }[] {
@@ -81,6 +84,20 @@ export function fieldsForLabel(text: string): { field: LabelField; synonym: Syno
 export function isKnownLabel(text: string): boolean {
   const key = labelKey(text);
   return key.length > 0 && (keyIndex.has(key) || structuralKeys.has(key));
+}
+
+/**
+ * The label as this table spells it ("TOTAL", "Customer Transaction Reference No"), never the text as found, so
+ * nothing but table text can come out of it. null when the text isn't a known label.
+ */
+export function canonicalLabel(text: string): string | null {
+  const key = labelKey(text);
+  if (!key) return null;
+  const canonical = structuralKeys.get(key) ?? keyIndex.get(key)?.[0].synonym.text;
+  if (!canonical) return null;
+  // Keep the trailing "No" / "#" the key ignores: it tells the 2026 FIRA layouts apart
+  const marker = text.trim().match(/\s(No\.?|#)$/i);
+  return marker ? `${canonical} ${/^no/i.test(marker[1]) ? "No" : "#"}` : canonical;
 }
 
 /** Synonyms of a field as normalised keys, longest first, for prefix ("Label: value") matching. */

@@ -20,7 +20,7 @@ describe("draftFromExtractions", () => {
       total: 2000,
       deelRef: "DLR7FAKE2Q",
     });
-    expect(draft.fira).toEqual({ source: "pdf", firaRef: "SYNTHREF0001", processedDate: "25-08-2026", fcyAmount: 1995, inrAmount: 179955 });
+    expect(draft.fira).toEqual({ source: "pdf", currency: "USD", firaRef: "SYNTHREF0001", processedDate: "25-08-2026", fcyAmount: 1995, inrAmount: 179955 });
     expect(draft.options).toEqual({ placeOfSupply: "", notes: "", overrideHsnSac: "", overrideInvoiceNumber: "" });
     expect(draft.edited).toEqual([]);
   });
@@ -45,7 +45,7 @@ describe("legacy wrappers over the engine", () => {
       supplierAddress: "1 Test Road, Delhi, DL 110001",
       role: "UI/UX Designer",
       currency: "USD",
-      sourceCurrencies: ["USD", "USD", "USD", "USD"],
+      sourceCurrencies: ["USD", "USD", "USD", "USD", "USD"], // header, summary, subtotal, VAT and the item
       headerTotal: 2000,
       summaryTotal: 2000,
       total: 2000,
@@ -62,6 +62,6 @@ describe("legacy wrappers over the engine", () => {
     const d = await parseDeelInvoice(cellsToPdf(cells));
     expect(d.headerTotal).toBe(2000);
     expect(d.vat).toBe(0);
-    expect(d.sourceCurrencies).toEqual(["USD", "USD", "USD", "USD"]);
+    expect(d.sourceCurrencies).toEqual(["USD", "USD", "USD", "USD", "USD"]);
   });
 });
