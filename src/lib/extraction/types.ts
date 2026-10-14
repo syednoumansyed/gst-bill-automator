@@ -13,7 +13,11 @@ export interface Field<T> {
   /** null when the engine couldn't read it (never a made-up 0 or "") */
   value: T | null;
   confidence: Confidence;
-  /** Strategy that produced the value, e.g. "label-right:TOTAL", "label-below:Processed Date", "pattern:usd" */
+  /**
+   * Strategy that produced the value, e.g. "label-right:TOTAL", "label-below:Processed Date", "pattern:usd".
+   * With no value: "missing" (no label on the page), "unreadable:<label>" (the label is there, with no readable
+   * value beside or below it) or "conflict:<sources>" (different values were read and nothing chose between them).
+   */
   source: string;
 }
 
