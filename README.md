@@ -12,6 +12,7 @@ Indian freelancers and contractors who are paid by foreign clients through Deel 
 
 - Parses a Deel invoice PDF: reference, dates, client details, service period, billed amount.
 - Parses a bank FIRA PDF to get the realised USD, INR credited and exchange rate. Or enter FIRA / Skydo details by hand.
+- **Review before issuing:** shows every value it read with a confidence mark, flags anything doubtful with a code and what to do, and lets you correct it. Nothing is issued or synced until you confirm, and every check runs again on what you confirm.
 - Generates a GST export-of-services invoice PDF under LUT (zero-rated, no IGST).
 - Optional Airtable sync of invoice metadata and PDF links, to keep a compliance trail (Deel invoice, FIRA, GST invoice).
 - Optional hosted "share mode" for a public demo link (see below).
@@ -28,7 +29,7 @@ Indian freelancers and contractors who are paid by foreign clients through Deel 
 - USD invoices only.
 - No VAT handling.
 - LUT zero-rated exports of services only. No IGST-paying invoices, no domestic supply.
-- Deel changes its invoice layout from time to time. When a layout is not recognised, or the numbers do not reconcile, the app refuses to produce an invoice instead of guessing. Open an issue with a redacted sample.
+- Deel and banks change their PDF layouts from time to time. The reader is built to survive renamed, split and moved labels (see [docs/parsing.md](docs/parsing.md)); when it still can't read something, it flags the field for you to fill in rather than guessing, and when the numbers don't reconcile it refuses to issue. Use **Copy diagnostics** on the review screen (labels only, every value masked) to open an issue.
 - Always compare the output with your Deel invoice and bank credit.
 
 ## Quick start with Docker
