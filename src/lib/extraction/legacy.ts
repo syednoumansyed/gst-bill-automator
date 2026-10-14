@@ -16,6 +16,8 @@ import type { DeelParsedInvoice, FiraParsedData } from "../types";
 export type LegacyDeel = DeelParsedInvoice & {
   /** Currency printed with each amount that was read */
   currencyOf: Partial<Record<"header" | "summary" | "subtotal" | "vat", string>>;
+  /** The client name/address split under BILL TO is a guess (see readBillTo) */
+  nameAmbiguous?: boolean;
 };
 
 /** Sequential Deel read. Amounts: undefined = label absent, NaN = label present but its amount unreadable. */
@@ -158,40 +160,75 @@ export function legacyDeel(lines: string[]): LegacyDeel {
 
 const COUNTRIES = ["Saudi Arabia", "India", "United States", "United Kingdom", "UAE", "Singapore", "Germany", "Australia", "Canada"];
 
+const CONNECTOR_END = /(?:^|\s)(?:&|and|of|for|the)$/i;
+const CONNECTOR_START = /^(?:&|and|of|for|the)\s/i;
+/** An address line starts with a number ("1 Main St") or a region code and number ("DL 110001") */
+const ADDRESS_START = (l: string) => /^\d/.test(l) || /^[A-Z]{2}\s+\d/.test(l);
+
+/**
+ * How the client name was told apart from the address. Names can't be cross-checked, so anything but a clear
+ * reading is reported as ambiguous and the review form asks the user to check it.
+ * - "connector": lines joined because one ends with, or the next starts with, "&", "and", "of", "for" or "the";
+ * - "short-first-line": two lines joined only because the first is short (the original parser's guess);
+ * - "single": a one-line name.
+ */
+export type NameRule = "connector" | "short-first-line" | "single";
+
 /** Client name, address, country, VAT ID and registration number from the lines under BILL TO. */
 export function readBillTo(rawBillTo: string[]) {
-  const out = { clientName: "", clientAddress: "", clientCountry: "", clientVatId: "", clientRegistrationNumber: "" };
+  const out = {
+    clientName: "",
+    clientAddress: "",
+    clientCountry: "",
+    clientVatId: "",
+    clientRegistrationNumber: "",
+    nameRule: "single" as NameRule,
+    /** The name/address split is a guess (see the rules at the end) */
+    nameAmbiguous: false,
+  };
   const filtered = rawBillTo.filter((l) => !l.match(/^Registration number:|^VAT ID|^Group:|^\d{10,}/));
   const countryIdx = filtered.findIndex((l) => COUNTRIES.includes(l));
+  // Name lines: everything before the first address-like line (and before the country)
+  const nameLines: string[] = [];
+  for (let i = 0; i < (countryIdx > 0 ? countryIdx : filtered.length); i++) {
+    if (ADDRESS_START(filtered[i])) break;
+    nameLines.push(filtered[i]);
+  }
+  // A name wrapped across lines ends with a connector ("For", "&", …) or the next line starts with one: join it
+  let nameLen = 1;
+  while (
+    nameLen < nameLines.length &&
+    nameLen < 3 &&
+    (CONNECTOR_END.test(nameLines[nameLen - 1]) || CONNECTOR_START.test(nameLines[nameLen]))
+  ) {
+    nameLen++;
+  }
   if (countryIdx > 0) {
-    const nameLines: string[] = [];
-    for (let i = 0; i < countryIdx; i++) {
-      const line = filtered[i];
-      if (/^\d/.test(line) || /^[A-Z]{2}\s+\d/.test(line)) break;
-      nameLines.push(line);
-    }
-    // A name wrapped across lines ends with a connector ("For", "&", "of", …): join it.
     // KNOWN BUG kept for compatibility (tests/unit/parseDeelInvoice.test.ts): a short name ending in a comma is
     // joined with the next address line, because two lines are joined whenever the first is under 30 characters.
-    let nameLen = 1;
-    while (nameLen < nameLines.length && nameLen < 3 && /(?:^|\s)(?:&|and|of|for|the)$/i.test(nameLines[nameLen - 1])) nameLen++;
+    // It is reported as ambiguous, so the review form flags it.
     if (nameLen > 1) {
-      out.clientName = nameLines.slice(0, nameLen).join(" ");
-      out.clientAddress = nameLines.slice(nameLen).join(", ");
+      out.nameRule = "connector";
     } else if (nameLines.length >= 2 && nameLines[0].length < 30) {
-      out.clientName = nameLines.slice(0, 2).join(" ");
-      out.clientAddress = nameLines.slice(2).join(", ");
-    } else {
-      out.clientName = nameLines[0] || "";
-      out.clientAddress = nameLines.slice(1).join(", ");
+      out.nameRule = "short-first-line";
+      nameLen = 2;
     }
-    const addrLines = filtered.slice(nameLines.length, countryIdx);
-    if (addrLines.length > 0) out.clientAddress = (out.clientAddress ? out.clientAddress + ", " : "") + addrLines.join(", ");
+    out.clientName = nameLines.slice(0, nameLen).join(" ");
+    out.clientAddress = [...nameLines.slice(nameLen), ...filtered.slice(nameLines.length, countryIdx)].join(", ");
     out.clientCountry = filtered[countryIdx];
-  } else {
-    out.clientName = filtered[0] || "";
-    out.clientAddress = filtered.slice(1).join(", ");
+  } else if (filtered.length > 0) {
+    // No country line: the block's end is unknown, so only the connector rule joins lines
+    if (nameLen > 1) out.nameRule = "connector";
+    out.clientName = filtered.slice(0, nameLen).join(" ");
+    out.clientAddress = filtered.slice(nameLen).join(", ");
   }
+  // A street line without a number after a name the connector rule closed is normal; these are not:
+  out.nameAmbiguous =
+    filtered.length > 0 &&
+    (countryIdx <= 0 || // no country line, so the block's end is a guess
+      out.nameRule === "short-first-line" || // joined only because the first line is short
+      (out.nameRule === "connector" && CONNECTOR_END.test(nameLines[nameLen - 1])) || // still ends in "&" after 3 lines
+      (out.nameRule === "single" && nameLines.length > 1)); // a long first line followed by more text: maybe wrapped
   const vatLine = rawBillTo.find((l) => l.startsWith("VAT ID"));
   if (vatLine) out.clientVatId = vatLine.replace("VAT ID", "").trim();
   if (!out.clientVatId) {

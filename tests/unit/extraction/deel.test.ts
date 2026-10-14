@@ -197,6 +197,53 @@ describe("extractDeel: layout changes it survives", () => {
   });
 });
 
+describe("extractDeel: never silently empty", () => {
+  it.each([
+    ["value:deelRef", "deelRef", "warning"],
+    ["value:period", "periodStart", "warning"],
+    ["value:header", "headerTotal", "warning"],
+    ["value:summary", "summaryTotal", "warning"],
+  ])("a missing %s is flagged on deel.%s (%s)", async (role, field, severity) => {
+    const d = await extract(drop(deelCells("deel-2026-07"), role));
+    expect(d.fields[field as "deelRef"].value).toBeNull();
+    expect(d.issues).toContainEqual(expect.objectContaining({ code: "DEEL_FIELD_UNREADABLE", field: `deel.${field}`, severity }));
+  });
+
+  it("a missing total is an error when the other total is missing too", async () => {
+    const d = await extract(drop(drop(deelCells("deel-2026-07"), "value:header"), "value:summary"));
+    expect(d.issues).toContainEqual(expect.objectContaining({ field: "deel.headerTotal", severity: "error" }));
+    expect(d.issues).toContainEqual(expect.objectContaining({ field: "deel.summaryTotal", severity: "error" }));
+  });
+
+  it("finds the summary total when the summary block sits above the items", async () => {
+    const cells = deelCells("deel-2026-07").map((c) =>
+      /^(label|value):(subtotal|vat|vatRate|summary)$/.test(c.role ?? "") ? { ...c, y: c.y + 120 } : c,
+    );
+    const d = await extract(cells);
+    expect(d.fields.summaryTotal.value).toBe(2000);
+    expect(d.fields.headerTotal.value).toBe(2000);
+    expect(d.lineItems.map((i) => i.amount.value)).toEqual([2000]);
+  });
+
+  it("reads a name wrapped over three lines when a line starts with a connector", async () => {
+    const d = await extract(
+      deelCells("deel-2026-07", { ...FAKE_DEEL, clientLines: ["Acme Holdings", "For Testing &", "Research", "1 Main St", "Riyadh, 11111", "Saudi Arabia"] }),
+    );
+    expect(d.fields.clientName).toMatchObject({ value: "Acme Holdings For Testing & Research", confidence: "medium" });
+    expect(d.issues).toEqual([]);
+  });
+
+  it("flags a client name it can't split from the address with certainty", async () => {
+    // No country line: where the name ends is a guess
+    const d = await extract(deelCells("deel-2026-07", { ...FAKE_DEEL, clientLines: ["Acme Research For Testing &", "Education LLC", "1 Main St", "Riyadh, 11111"] }));
+    expect(d.fields.clientName.confidence).toBe("low");
+    expect(d.issues).toContainEqual(
+      expect.objectContaining({ code: "DEEL_FIELD_UNREADABLE", field: "deel.clientName", severity: "warning", message: "The client name may be wrapped or incomplete." }),
+    );
+    expect(d.issues).toContainEqual(expect.objectContaining({ field: "deel.clientCountry", severity: "warning" }));
+  });
+});
+
 describe("extractDeel: says so when it can't", () => {
   it("header and summary totals that disagree give an issue, not a pick", async () => {
     const d = await extract(deelCells("deel-2026-07", { ...FAKE_DEEL, header: 2500 }));
