@@ -92,7 +92,9 @@ describe("sessions", () => {
 
     const [v, exp, sig] = value.split(".");
     expect(verifySessionToken(`${v}.${Number(exp) + 1000}.${sig}`, now)).toBe(false);
-    expect(verifySessionToken(`${v}.${exp}.${sig.slice(0, -1)}A`, now)).toBe(false);
+    // Flip the last signature character to a different one (a fixed "A" was a no-op 1 time in 64)
+    const flipped = sig.slice(0, -1) + (sig.endsWith("A") ? "B" : "A");
+    expect(verifySessionToken(`${v}.${exp}.${flipped}`, now)).toBe(false);
 
     // Changing the password signs everyone out
     process.env.ADMIN_PASSWORD = "new password";
