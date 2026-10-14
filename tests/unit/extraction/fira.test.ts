@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractFira } from "@/lib/extraction";
+import { draftFromExtractions, extractDeel, extractFira } from "@/lib/extraction";
 import { parseFiraPdf } from "@/lib/parseFira";
 import type { FiraExtraction } from "@/lib/extraction/types";
 import { cellsToPdf, deelCells, FAKE_FIRA, firaCells, type Cell, type FiraLayoutId } from "./layouts";
@@ -91,6 +91,14 @@ describe("extractFira: says so when it can't", () => {
     const f = await extract(relabel(firaCells("fira-bank-2026"), "label:firaRef", "Bank Ref"));
     expect(f.fields.firaRef).toMatchObject({ value: "SYNTHREF0001", confidence: "low", source: "pattern:reference" });
     expect((await parseFiraPdf(cellsToPdf(relabel(firaCells("fira-bank-2026"), "label:firaRef", "Bank Ref")))).firaRef).toBe("");
+  });
+
+  it("a FIRA in EUR reads EUR, gives FIRA_CURRENCY_UNSUPPORTED and carries EUR into the draft", async () => {
+    const f = await extract(firaCells("fira-bank-2026", { ...FAKE_FIRA, currency: "EUR" }));
+    expect(f.fields.currency.value).toBe("EUR");
+    expect(f.issues).toContainEqual(expect.objectContaining({ code: "FIRA_CURRENCY_UNSUPPORTED", field: "fira.currency", severity: "error" }));
+    const deel = await extractDeel(cellsToPdf(deelCells("deel-2026-07")));
+    expect(draftFromExtractions(deel, f).fira?.currency).toBe("EUR");
   });
 
   it("an implausible INR/USD rate gives FIRA_RATE_IMPLAUSIBLE", async () => {

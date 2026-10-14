@@ -29,6 +29,10 @@ export interface DeelReading {
   extraction: DeelExtraction;
   /** Currency printed with each amount used, for the legacy `sourceCurrencies` */
   currencyOf: Partial<Record<MoneyKey, string>>;
+  /** Currency of each line item's amount (null when unread) */
+  itemCurrencies?: (string | null)[];
+  /** Every currency other than USD printed with any amount on the page */
+  foreignCurrencies?: string[];
 }
 
 const DEEL_FIELDS: LabelField[] = [
@@ -433,11 +437,24 @@ export function extractDeelFromText(text: PdfText): DeelReading {
     ...itemRes.map((r) => r.value?.currency),
   ].filter((c): c is string => !!c);
   const currencySet = [...new Set(used)];
+  // Every money token printed anywhere, a cell or two neighbouring cells ("EUR" "2,000.00"), items included,
+  // so a foreign amount is caught even where no field was read from it ("INV" "2026" is an invoice number)
+  const printed = new Set<string>();
+  for (const row of text.rows) {
+    row.items.forEach((item, i) => {
+      for (const t of [item.str, `${item.str} ${row.items[i + 1]?.str ?? ""}`]) {
+        const m = parseMoney(t);
+        if (m && m.currency !== "INV") printed.add(m.currency);
+      }
+    });
+  }
+  const foreignCurrencies = [...new Set([...currencySet, ...printed])].filter((c) => c !== "USD");
   let currency: Field<string>;
   if (currencySet.length === 1) {
     currency = {
       value: currencySet[0],
-      confidence: knownLayout && allPassed && totalsChecked ? "high" : "medium",
+      // A USD reading next to a foreign amount elsewhere on the page is not a sure reading
+      confidence: foreignCurrencies.length > 0 && currencySet[0] === "USD" ? "low" : knownLayout && allPassed && totalsChecked ? "high" : "medium",
       source: "amounts",
     };
   } else if (currencySet.length > 1) {
@@ -453,6 +470,17 @@ export function extractDeelFromText(text: PdfText): DeelReading {
     );
   } else {
     currency = missing();
+  }
+  if (currencySet.length <= 1 && foreignCurrencies.length > 0) {
+    issues.push(
+      issue(
+        "DEEL_CURRENCY_UNSUPPORTED",
+        "deel",
+        `The Deel invoice shows amounts in ${foreignCurrencies.join(", ")}; only USD invoices are supported.`,
+        "Check the Deel PDF; only USD invoices can be issued.",
+        { field: "deel.currency" },
+      ),
+    );
   }
   const currencyOf: Partial<Record<MoneyKey, string>> = {};
   for (const k of keys) if (moneyRes[k].value) currencyOf[k] = moneyRes[k].value!.currency;
@@ -589,7 +617,12 @@ export function extractDeelFromText(text: PdfText): DeelReading {
   }
   if (layout.isNew) issues.unshift(newLayoutIssue("deel"));
   issues.sort((a, b) => (a.severity === b.severity ? 0 : a.severity === "error" ? -1 : 1));
-  return { extraction: { kind: "deel-invoice", layout, fields, lineItems, issues }, currencyOf };
+  return {
+    extraction: { kind: "deel-invoice", layout, fields, lineItems, issues },
+    currencyOf,
+    itemCurrencies: itemRes.map((r) => r.value?.currency ?? null),
+    foreignCurrencies,
+  };
 }
 
 /**

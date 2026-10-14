@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { extractDeel } from "@/lib/extraction";
+import { draftFromExtractions, extractDeel } from "@/lib/extraction";
+import { validateDeelData } from "@/lib/validateInvoice";
 import { parseDeelInvoice } from "@/lib/parseDeelInvoice";
 import type { DeelExtraction } from "@/lib/extraction/types";
 import { cellsToPdf, deelCells, FAKE_DEEL, gstInvoiceCells, lutFormCells, usd, type Cell, type DeelLayoutId } from "./layouts";
@@ -293,6 +294,27 @@ describe("extractDeel: says so when it can't", () => {
     const d = await extract(relabel(deelCells("deel-2026-07"), "value:summary", usd(2000, "EUR")));
     expect(d.fields.currency.value).toBeNull();
     expect(codes(d)).toContain("DEEL_CURRENCY_UNSUPPORTED");
+  });
+
+  it("an invoice entirely in EUR reads EUR and gives a DEEL_CURRENCY_UNSUPPORTED error", async () => {
+    const cells = deelCells("deel-2026-07").map((c) => ({ ...c, text: c.text.replace(/^USD \$/, "EUR ") }));
+    const d = await extract(cells);
+    expect(d.fields.currency.value).toBe("EUR");
+    expect(d.fields.total.value).toBe(2000);
+    expect(d.issues).toContainEqual(expect.objectContaining({ code: "DEEL_CURRENCY_UNSUPPORTED", field: "deel.currency", severity: "error" }));
+    const draft = draftFromExtractions(d, null);
+    expect(draft.deel.currency).toBe("EUR");
+  });
+
+  it("a foreign line item under USD totals is flagged, and the legacy wrapper passes it on to validation", async () => {
+    const cells = deelCells("deel-2026-07", { ...FAKE_DEEL, items: [{ description: "Fixed rate: Hourly payment", amount: 2000 }] }).map((c) =>
+      c.role === "value:item:0" ? { ...c, text: "EUR 2,000" } : c,
+    );
+    const d = await extract(cells);
+    expect(d.issues).toContainEqual(expect.objectContaining({ code: "DEEL_CURRENCY_UNSUPPORTED", field: "deel.currency" }));
+    const w = await parseDeelInvoice(cellsToPdf(cells));
+    expect(w.sourceCurrencies).toContain("EUR");
+    expect(() => validateDeelData(w)).toThrow(/Only USD/);
   });
 
   it("our own GST invoice uploaded as the Deel invoice is DOC_WRONG_KIND", async () => {

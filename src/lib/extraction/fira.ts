@@ -24,6 +24,7 @@ const NAMES: Record<string, string> = {
   processedDate: "processed date",
   fcyAmount: "USD (FCY) amount",
   inrAmount: "INR amount",
+  currency: "currency",
 };
 
 const unreadable = (field: string, conflict = false) =>
@@ -145,6 +146,20 @@ export function extractFiraFromText(text: PdfText): FiraExtraction {
   const curRes = resolve(cur.candidates);
   const currency = toField(curRes, confidenceOf(curRes, { knownLayout, checked: rateChecked && curRes.value === "USD" }), cur.unreadable[0]?.text);
 
+  if (currency.value !== null && currency.value !== "USD") {
+    issues.push(
+      issue(
+        "FIRA_CURRENCY_UNSUPPORTED",
+        "fira",
+        `The FIRA is for ${currency.value}; only USD remittances are supported.`,
+        "Check that this is the FIRA for the Deel invoice; only USD remittances can be matched.",
+        { field: "fira.currency" },
+      ),
+    );
+  } else if (currency.value === null) {
+    // Every bank FIRA prints its currency; without it the amounts can't be taken as USD
+    issues.push({ ...unreadable("currency", curRes.conflict), severity: cur.unreadable.length > 0 || curRes.conflict ? "error" : "warning" });
+  }
   if (firaRef.value === null) issues.push(unreadable("firaRef", refRes.conflict));
   if (processedDate.value === null) issues.push(unreadable("processedDate", dateRes.conflict));
   if (fcyAmount.value === null) issues.push(unreadable("fcyAmount", fcyRes.conflict));
