@@ -95,6 +95,25 @@ export interface ComplianceMetadata {
     bankChargesUsd: number;
     exchangeRate: number;
   };
+  /** How the figures reached the invoice: the review draft (and what the user changed) or the legacy one-step form */
+  review?: ReviewRecord;
+}
+
+/** Fingerprint of an uploaded document, so the compliance record names exactly which file the figures came from. */
+export interface SourceDocumentSummary {
+  sha256: string;
+  bytes: number;
+}
+
+export interface ReviewRecord {
+  /** "review": issued from a confirmed review draft; "legacy": parsed and issued in one request */
+  mode: "review" | "legacy";
+  /** Draft paths the user changed from what was extracted, e.g. ["fira.firaRef"] */
+  edited: string[];
+  sources: {
+    deel: SourceDocumentSummary;
+    fira: (Partial<SourceDocumentSummary> & { source: "pdf" | "manual" }) | null;
+  };
 }
 
 export interface GeneratedInvoice {

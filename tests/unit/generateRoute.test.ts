@@ -60,30 +60,30 @@ describe("POST /api/generate: rejects bad input", () => {
     }
   });
 
-  it("400 when the FIRA is more than 90 days from the Deel invoice", async () => {
+  it("422 when the FIRA is more than 90 days from the Deel invoice", async () => {
     const { res, body } = await post({
       file: linesToPdf(deelLines()),
       firaFile: linesToPdf(firaLines({ date: "25-01-2026" })),
     });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(422);
     expect(body.error).toMatch(/mismatch/i);
   });
 
-  it("400 when the FIRA amount is far from the Deel total", async () => {
+  it("422 when the FIRA amount is far from the Deel total", async () => {
     const { res, body } = await post({
       file: linesToPdf(deelLines()),
       firaFile: linesToPdf(firaLines({ fcy: "1500.00", inr: "135000.00" })),
     });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(422);
     expect(body.error).toMatch(/amount mismatch/i);
   });
 
-  it("400 when the FIRA received more than the Deel total", async () => {
+  it("422 when the FIRA received more than the Deel total", async () => {
     const { res, body } = await post({
       file: linesToPdf(deelLines()),
       firaFile: linesToPdf(firaLines({ fcy: "2100.00", inr: "189000.00" })),
     });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(422);
     expect(body.error).toMatch(/amount mismatch/i);
   });
 });

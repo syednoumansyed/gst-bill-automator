@@ -1,4 +1,4 @@
-import { InvoiceValidationError } from "./validateInvoice";
+import { issue, IssueError, type IssueDocument } from "./errors";
 
 /** Server-side limits: the browser checks are only a convenience, so every request is checked here too. */
 export const MAX_REQUEST_BYTES = 10 * 1024 * 1024;
@@ -10,26 +10,46 @@ const MAX_ACTIVE_PARSES = 2;
 const MAX_QUEUED_PARSES = 8;
 const MAX_TEXT_ITEMS = 5000;
 
-export class TooBusyError extends Error {
+export class TooBusyError extends IssueError {
   constructor() {
-    super("The server is busy generating other invoices. Try again in a moment.");
+    super(
+      issue(
+        "SERVER_BUSY",
+        "request",
+        "The server is busy generating other invoices. Try again in a moment.",
+        "Wait a few seconds, then submit again. Nothing was saved.",
+      ),
+    );
     this.name = "TooBusyError";
   }
 }
 
+/** Labels are "The Deel invoice" or "The FIRA"; the issue names the document so the form can point at its upload. */
+const documentOf = (label: string): IssueDocument => (/fira/i.test(label) ? "fira" : "deel");
+
+const uploadAction = (label: string) =>
+  documentOf(label) === "fira"
+    ? "Upload the FIRA PDF your bank sent, or enter the FIRA details by hand."
+    : "Upload the invoice PDF from Deel (Invoices → Download), not the GST invoice this app made.";
+
 /** Rejects anything that isn't a reasonably sized PDF before it reaches the parser. */
 export function assertPdfUpload(bytes: Buffer, label: string): void {
+  const mb = MAX_PDF_BYTES / 1024 / 1024;
   if (bytes.length > MAX_PDF_BYTES) {
-    throw new InvoiceValidationError(`${label} is larger than ${MAX_PDF_BYTES / 1024 / 1024} MB.`);
+    throw new IssueError(
+      issue("PDF_TOO_LARGE", documentOf(label), `${label} is larger than ${mb} MB.`, `${uploadAction(label)} Each PDF must be ${mb} MB or less.`),
+    );
   }
   if (bytes.subarray(0, 5).toString("latin1") !== "%PDF-") {
-    throw new InvoiceValidationError(`${label} is not a PDF file.`);
+    throw new IssueError(issue("PDF_NOT_PDF", documentOf(label), `${label} is not a PDF file.`, uploadAction(label)));
   }
 }
 
 export function assertPageCount(pages: number, label: string): void {
   if (pages > MAX_PDF_PAGES) {
-    throw new InvoiceValidationError(`${label} has ${pages} pages; at most ${MAX_PDF_PAGES} are supported.`);
+    throw new IssueError(
+      issue("PDF_TOO_MANY_PAGES", documentOf(label), `${label} has ${pages} pages; at most ${MAX_PDF_PAGES} are supported.`, uploadAction(label)),
+    );
   }
 }
 
@@ -62,6 +82,8 @@ export const withParseSlot = createLimiter(MAX_ACTIVE_PARSES, MAX_QUEUED_PARSES)
 /** Deel invoices and FIRAs have a few hundred text items; far more means a hostile or unsupported file. */
 export function assertTextItemCount(count: number, label: string): void {
   if (count > MAX_TEXT_ITEMS) {
-    throw new InvoiceValidationError(`${label} contains far more text than an invoice; it isn't supported.`);
+    throw new IssueError(
+      issue("PDF_TOO_MUCH_TEXT", documentOf(label), `${label} contains far more text than an invoice; it isn't supported.`, uploadAction(label)),
+    );
   }
 }
