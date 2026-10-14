@@ -58,6 +58,7 @@ export function draftFromParsed(
     fira: fira
       ? {
           source: fira.source,
+          currency: "USD", // TODO(api agent): carry the FIRA currency
           firaRef: text(fira.data.firaRef),
           processedDate: text(fira.data.processedDate),
           fcyAmount: fira.data.fcyAmount,

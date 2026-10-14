@@ -122,11 +122,11 @@ function applyManualFira(form: FormData, draft: InvoiceDraft): Issue[] {
   if (!input) return [];
   try {
     const fira = manualFira(draft.deel.total, input);
-    draft.fira = { source: "manual", ...fira };
+    draft.fira = { source: "manual", currency: "USD", ...fira };
     return [];
   } catch (error) {
     if (!(error instanceof IssueError)) throw error;
-    draft.fira = { source: "manual", firaRef: input.ref, processedDate: input.date, fcyAmount: input.receivedUsd ?? 0, inrAmount: 0 };
+    draft.fira = { source: "manual", currency: "USD", firaRef: input.ref, processedDate: input.date, fcyAmount: input.receivedUsd ?? 0, inrAmount: 0 };
     return error.issues;
   }
 }

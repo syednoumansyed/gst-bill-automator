@@ -111,7 +111,7 @@ describe("POST /api/parse: manual FIRA entry", () => {
   it("fills draft.fira from the receipt figures when there's no FIRA PDF", async () => {
     const { res, body } = await parse({ file: pdf(), manualFiraReceivedUsd: "1995", manualFiraRate: "90", manualFiraRef: "SKYDO-1", manualFiraDate: "2026-09-25" });
     expect(res.status).toBe(200);
-    expect(body.draft.fira).toEqual({ source: "manual", fcyAmount: 1995, inrAmount: 179550, firaRef: "SKYDO-1", processedDate: "2026-09-25" });
+    expect(body.draft.fira).toEqual({ source: "manual", currency: "USD", fcyAmount: 1995, inrAmount: 179550, firaRef: "SKYDO-1", processedDate: "2026-09-25" });
   });
 
   it("keeps a bad entry for correction and reports it as an issue, not a failed request", async () => {

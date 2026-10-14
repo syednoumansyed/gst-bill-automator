@@ -33,7 +33,7 @@ export function draft(over: DeepPartialDraft = {}): InvoiceDraft {
       total: 2000,
       deelRef: "SYNTHETIC",
     },
-    fira: { source: "pdf", firaRef: "SYNTHREF0001", processedDate: "25-08-2026", fcyAmount: 1995, inrAmount: 179955 },
+    fira: { source: "pdf", currency: "USD", firaRef: "SYNTHREF0001", processedDate: "25-08-2026", fcyAmount: 1995, inrAmount: 179955 },
     options: { placeOfSupply: "", notes: "", overrideHsnSac: "", overrideInvoiceNumber: "" },
     edited: [],
   };

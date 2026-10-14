@@ -32,6 +32,7 @@ export function draftFromExtractions(deel: DeelExtraction, fira: FiraExtraction 
     fira: fira
       ? {
           source: "pdf",
+          currency: "USD", // TODO(engine agent): carry the extracted FIRA currency
           firaRef: s(fira.fields.firaRef),
           processedDate: s(fira.fields.processedDate),
           fcyAmount: n(fira.fields.fcyAmount),
