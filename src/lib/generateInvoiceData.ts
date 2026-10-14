@@ -1,7 +1,23 @@
 import { AppConfig, DEFAULT_SERVICE_DESCRIPTION } from "./config";
 import { selectLut } from "./configSchema";
-import { ComplianceMetadata, DeelParsedInvoice, FiraParsedData, GeneratedInvoice } from "./types";
+import type { InvoiceDraft } from "./draft";
+import { invoiceInputFromDraft, type DeelExtras } from "./draftAdapter";
+import { issue } from "./errors";
+import { ComplianceMetadata, DeelParsedInvoice, FiraParsedData, GeneratedInvoice, ReviewRecord } from "./types";
 import { InvoiceValidationError, validateDeelData, validateGeneratedInvoice, validateSupplier } from "./validateInvoice";
+
+/**
+ * Builds the invoice from a review draft. Callers run validateDraft first; generateInvoiceData still re-checks the
+ * figures it uses, so a draft that skipped validation can't produce a wrong invoice either.
+ */
+export function generateInvoiceFromDraft(
+  draft: InvoiceDraft,
+  config: AppConfig,
+  opts: { review?: ReviewRecord; extras?: DeelExtras } = {},
+): GeneratedInvoice {
+  const { deelData, overrides } = invoiceInputFromDraft(draft, opts.extras);
+  return generateInvoiceData(deelData, config, { ...overrides, review: opts.review });
+}
 
 export function generateInvoiceData(
   deelData: DeelParsedInvoice,
@@ -13,6 +29,8 @@ export function generateInvoiceData(
     overrideInvoiceNumber?: string;
     firaData?: FiraParsedData;
     firaSource?: "pdf" | "manual";
+    /** Recorded in complianceMetadata.review */
+    review?: ReviewRecord;
   }
 ): GeneratedInvoice {
   const client = config.clientProfile;
@@ -58,7 +76,18 @@ export function generateInvoiceData(
       fira.inrAmount <= 0 ||
       (overrides?.firaSource !== "manual" && (!fira.firaRef || !fira.processedDate))
     ) {
-      throw new InvoiceValidationError("FIRA data is incomplete. Please upload a valid FIRA PDF or fill out the required manual fields.");
+      const manual = overrides?.firaSource === "manual";
+      throw new InvoiceValidationError(
+        issue(
+          manual ? "MANUAL_FIRA_INVALID" : "FIRA_FIELD_UNREADABLE",
+          "fira",
+          "FIRA data is incomplete. Please upload a valid FIRA PDF or fill out the required manual fields.",
+          manual
+            ? "Enter the USD received and the exchange rate."
+            : "Enter the reference, processed date, USD and INR amounts shown on your FIRA.",
+          { field: "fira" },
+        ),
+      );
     }
 
     currency = "INR";
@@ -216,6 +245,7 @@ export function generateInvoiceData(
           exchangeRate: firaDerivedData.exchangeRate,
         }
       : undefined,
+    ...(overrides?.review ? { review: overrides.review } : {}),
   };
 
   const invoice: GeneratedInvoice = {
