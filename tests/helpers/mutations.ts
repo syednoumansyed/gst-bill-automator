@@ -328,10 +328,10 @@ export function firaVariants(): Variant[] {
   // Reordered blocks: amounts above the identifiers; certificate title last
   {
     const [title, ...pairs] = base;
-    const [refL, refV, dateL, dateV, fcyL, fcyV, inrL, inrV] = pairs;
-    add({ name: "fira/reorder/amounts-first", category: "reorder", lines: [title, fcyL, fcyV, inrL, inrV, refL, refV, dateL, dateV] });
-    add({ name: "fira/reorder/date-before-ref", category: "reorder", lines: [title, dateL, dateV, refL, refV, fcyL, fcyV, inrL, inrV] });
-    add({ name: "fira/reorder/inr-before-fcy", category: "reorder", lines: [title, refL, refV, dateL, dateV, inrL, inrV, fcyL, fcyV] });
+    const [refL, refV, curL, curV, dateL, dateV, fcyL, fcyV, inrL, inrV] = pairs;
+    add({ name: "fira/reorder/amounts-first", category: "reorder", lines: [title, fcyL, fcyV, inrL, inrV, refL, refV, curL, curV, dateL, dateV] });
+    add({ name: "fira/reorder/date-before-ref", category: "reorder", lines: [title, dateL, dateV, refL, refV, curL, curV, fcyL, fcyV, inrL, inrV] });
+    add({ name: "fira/reorder/inr-before-fcy", category: "reorder", lines: [title, refL, refV, curL, curV, dateL, dateV, inrL, inrV, fcyL, fcyV] });
     add({ name: "fira/reorder/stream-reversed", category: "reorder", lines: base, reverseStream: true });
   }
 
