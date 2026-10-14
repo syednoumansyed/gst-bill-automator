@@ -19,10 +19,21 @@ export const GST_START = Date.UTC(2017, 6, 1);
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const isNumber = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n);
-const near = (a: number, b: number) => Math.abs(a - b) <= AMOUNT_TOLERANCE;
-const round2 = (n: number) => Math.round(n * 100) / 100;
 const usd = (n: number) => n.toFixed(2);
 const blank = (s: unknown) => typeof s !== "string" || s.trim() === "";
+
+/**
+ * Amounts are reconciled in whole cents/paise, never in floating point, so the figures that pass are exactly the
+ * figures printed. An amount with a fraction of a cent is refused (the draft schema refuses it too).
+ */
+export const isWholeCents = (n: number) => Math.abs(n * 100 - Math.round(n * 100)) < 1e-6;
+export const toCents = (n: number) => Math.round(n * 100);
+export const fromCents = (c: number) => c / 100;
+
+const isCurrency = (value: unknown, code: string) => typeof value === "string" && value.trim().toUpperCase() === code;
+
+const fractionOfCent = (field: string) =>
+  issue("DRAFT_INVALID", field.startsWith("fira") ? "fira" : "deel", `${field}: Use at most two decimal places.`, "Enter the amount exactly as printed, with at most two decimals.", { field });
 
 // ─── Dates ────────────────────────────────────────────────────────────────────
 
@@ -162,36 +173,43 @@ function draftDeelIssues(deel: InvoiceDraft["deel"]): Issue[] {
   if (blank(deel.clientName)) {
     missing("deel.clientName", "The client name is missing.", "Enter the client's name from the BILL TO block of the Deel invoice.");
   }
-  if (deel.currency !== "USD") out.push(deelIssues.currencyUnsupported([String(deel.currency ?? "")]));
+  if (!isCurrency(deel.currency, "USD")) out.push(deelIssues.currencyUnsupported([String(deel.currency ?? "").trim()]));
 
-  const totalOk = isNumber(deel.total) && deel.total > 0;
-  const subtotalOk = isNumber(deel.subtotal) && deel.subtotal > 0;
-  const vatOk = isNumber(deel.vat) && deel.vat >= 0;
-  if (!totalOk) {
-    missing("deel.total", "The Deel invoice total is zero or could not be read.", "Enter the Total shown on the Deel invoice.");
-  }
-  if (!subtotalOk) out.push(deelIssues.subtotalUnreadable());
-  if (!vatOk) out.push(deelIssues.vatUnreadable());
-  else if (!near(deel.vat, 0)) out.push(deelIssues.vatUnsupported(deel.vat));
+  /** A readable amount in whole cents, or null (with its issue recorded) */
+  const cents = (value: unknown, field: string, ok: (n: number) => boolean, unreadable: () => void): number | null => {
+    if (!isNumber(value) || !ok(value)) {
+      unreadable();
+      return null;
+    }
+    if (!isWholeCents(value)) {
+      out.push(fractionOfCent(field));
+      return null;
+    }
+    return toCents(value);
+  };
+
+  const total = cents(deel.total, "deel.total", (n) => n > 0, () =>
+    missing("deel.total", "The Deel invoice total is zero or could not be read.", "Enter the Total shown on the Deel invoice."),
+  );
+  const subtotal = cents(deel.subtotal, "deel.subtotal", (n) => n > 0, () => out.push(deelIssues.subtotalUnreadable()));
+  const vat = cents(deel.vat, "deel.vat", (n) => n >= 0, () => out.push(deelIssues.vatUnreadable()));
+  if (vat !== null && vat !== 0) out.push(deelIssues.vatUnsupported(deel.vat));
 
   const items = Array.isArray(deel.lineItems) ? deel.lineItems : [];
   if (items.length === 0) out.push(deelIssues.noLineItems());
-  let itemsOk = items.length > 0;
+  let itemsSum: number | null = items.length > 0 ? 0 : null;
   items.forEach((item, i) => {
     if (blank(item.description)) {
       missing(`deel.lineItems.${i}.description`, `Line item ${i + 1} has no description.`, "Enter the description the Deel invoice shows for this line.");
     }
-    if (!isNumber(item.amount) || item.amount < 0) {
-      out.push(deelIssues.itemAmountUnreadable(i));
-      itemsOk = false;
-    }
+    const amount = cents(item.amount, `deel.lineItems.${i}.amount`, (n) => n >= 0, () => out.push(deelIssues.itemAmountUnreadable(i)));
+    itemsSum = amount === null || itemsSum === null ? null : itemsSum + amount;
   });
 
-  if (itemsOk && subtotalOk) {
-    const sum = round2(items.reduce((acc, item) => acc + item.amount, 0));
-    if (!near(sum, deel.subtotal)) out.push(deelIssues.itemsDontSum(sum, deel.subtotal));
+  if (itemsSum !== null && subtotal !== null && itemsSum !== subtotal) {
+    out.push(deelIssues.itemsDontSum(fromCents(itemsSum), deel.subtotal));
   }
-  if (totalOk && subtotalOk && vatOk && !near(deel.subtotal + deel.vat, deel.total)) {
+  if (total !== null && subtotal !== null && vat !== null && subtotal + vat !== total) {
     out.push(deelIssues.totalsDisagree(deel.subtotal, deel.vat, deel.total));
   }
   return out;
@@ -213,13 +231,33 @@ function draftFiraIssues(draft: InvoiceDraft): Issue[] {
         : issue("FIRA_FIELD_UNREADABLE", "fira", `Couldn't read the FIRA's ${what}.`, pdfAction, { field }),
     );
 
-  const fcyOk = isNumber(fira.fcyAmount) && fira.fcyAmount > 0;
-  const inrOk = isNumber(fira.inrAmount) && fira.inrAmount > 0;
+  // The draft schema defaults the FIRA currency to USD; anything else can't be paired with a USD Deel invoice
+  const firaCurrency = fira.currency ?? "USD";
+  if (!isCurrency(firaCurrency, "USD")) {
+    out.push(
+      issue(
+        "FIRA_CURRENCY_UNSUPPORTED",
+        "fira",
+        `Only FIRAs for USD remittances are supported; this one shows ${String(firaCurrency).trim() || "no currency"}.`,
+        "Check the FCY currency on your FIRA. If the money arrived in another currency, make this invoice by hand.",
+        { field: "fira.currency" },
+      ),
+    );
+  }
+
+  let fcyOk = isNumber(fira.fcyAmount) && fira.fcyAmount > 0;
+  let inrOk = isNumber(fira.inrAmount) && fira.inrAmount > 0;
   if (!fcyOk) {
     unreadable("fira.fcyAmount", "USD amount", "Enter the FCY (USD) amount shown on your FIRA.", "Enter the USD amount you received.");
+  } else if (!isWholeCents(fira.fcyAmount)) {
+    out.push(fractionOfCent("fira.fcyAmount"));
+    fcyOk = false;
   }
   if (!inrOk) {
     unreadable("fira.inrAmount", "INR amount", "Enter the INR amount shown on your FIRA.", "Enter the USD received and the exchange rate so the INR amount can be worked out.");
+  } else if (!isWholeCents(fira.inrAmount)) {
+    out.push(fractionOfCent("fira.inrAmount"));
+    inrOk = false;
   }
   // A bank FIRA always carries its reference; manual entries may not have one
   if (!manual && blank(fira.firaRef)) {
@@ -269,12 +307,12 @@ function draftFiraIssues(draft: InvoiceDraft): Issue[] {
   }
 
   const total = draft.deel.total;
-  if (fcyOk && isNumber(total) && total > 0) {
-    const loss = round2(total - fira.fcyAmount);
-    if (loss < 0 || loss > MAX_TRANSIT_LOSS_USD) {
-      const message = loss < 0
+  if (fcyOk && isNumber(total) && total > 0 && isWholeCents(total)) {
+    const lossCents = toCents(total) - toCents(fira.fcyAmount);
+    if (lossCents < 0 || lossCents > MAX_TRANSIT_LOSS_USD * 100) {
+      const message = lossCents < 0
         ? `Amount mismatch: the FIRA shows USD ${usd(fira.fcyAmount)} received, more than the USD ${usd(total)} Deel billed.`
-        : `Amount mismatch: Deel billed USD ${usd(total)}, but the FIRA shows USD ${usd(fira.fcyAmount)} received, a gap of $${usd(loss)}; bank fees are at most $${MAX_TRANSIT_LOSS_USD}.`;
+        : `Amount mismatch: Deel billed USD ${usd(total)}, but the FIRA shows USD ${usd(fira.fcyAmount)} received, a gap of $${usd(fromCents(lossCents))}; bank fees are at most $${MAX_TRANSIT_LOSS_USD}.`;
       out.push(issue("FIRA_AMOUNT_MISMATCH", "fira", message, FIRA_PAIR_ACTION, { field: "fira.fcyAmount" }));
     }
   }

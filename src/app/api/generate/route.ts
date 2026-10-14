@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 import { manualFira, readManualFiraInput } from "@/lib/manualFira";
 import { checkUploadRequest, readDeelPdf, readForm, readPdfField, routeErrorResponse } from "@/lib/apiRequest";
 import { AppConfig, getConfig } from "@/lib/config";
@@ -9,8 +9,9 @@ import { validateDraft } from "@/lib/draftValidation";
 import { issue, IssueError, type IssueDocument } from "@/lib/errors";
 import { generateInvoiceFromDraft } from "@/lib/generateInvoiceData";
 import { generatePdf } from "@/lib/generatePdf";
-import { parseDeelInvoice } from "@/lib/parseDeelInvoice";
-import { parseFiraPdf } from "@/lib/parseFira";
+import { extractFira, readDeel } from "@/lib/extraction";
+import { toDeelParsed, toFiraParsed } from "@/lib/extraction/compat";
+import { applySyncHeaders, buildInvoiceResponse } from "@/lib/invoiceResponse";
 import { syncInvoice } from "@/lib/sync";
 import type { FiraParsedData, ReviewRecord, SourceDocumentSummary } from "@/lib/types";
 import { validateDeelData, validateSupplier } from "@/lib/validateInvoice";
@@ -44,28 +45,20 @@ export async function POST(req: NextRequest) {
     const issues = validateDraft(prepared.draft, config.businessProfile);
     const errors = issues.filter((i) => i.severity === "error");
     if (errors.length > 0) throw new IssueError(errors);
+    // The schema is the last gate for both flows (whole cents, a header-safe invoice-number override, lengths)
+    const draft = checkDraftSchema(prepared.draft);
 
-    const invoice = generateInvoiceFromDraft(prepared.draft, config, { review: prepared.review, extras: prepared.extras });
+    const invoice = generateInvoiceFromDraft(draft, config, { review: prepared.review, extras: prepared.extras });
 
-    // Render first: nothing is uploaded or written for an invoice that didn't render
+    // Render first, then build the whole response: nothing is uploaded or written for an invoice that didn't render
+    // or can't be sent back. The sync is the last step that can fail, and it reports instead of throwing.
     const pdfBuffer = await generatePdf(invoice);
-    const sync = await syncInvoice(invoice, { deelPdf: prepared.deelPdf, firaPdf: prepared.firaPdf, gstPdf: pdfBuffer }, config);
-    console.info(
-      `[generate] issued mode=${prepared.review.mode} edited=${prepared.draft.edited.length} sync=${sync.status}${sync.code ? `:${sync.code}` : ""}`,
-    );
-
-    const response = new NextResponse(new Uint8Array(pdfBuffer));
-    response.headers.set("Content-Type", "application/pdf");
-    response.headers.set("Content-Disposition", `attachment; filename="${invoice.invoiceNumber}-GST.pdf"`);
-    response.headers.set("Cache-Control", "no-store");
-    response.headers.set("X-Airtable-Sync-Status", sync.status);
-    if (sync.code) response.headers.set("X-Airtable-Sync-Code", sync.code);
-    if (sync.message) response.headers.set("X-Airtable-Sync-Message", encodeURIComponent(sync.message));
-    // Non-blocking notes (no LUT for this FY, warning-level review issues) as a URI-encoded JSON array of strings
     const warnings = [...(invoice.warnings ?? []), ...issues.filter((i) => i.severity === "warning").map((i) => i.message)];
-    if (warnings.length > 0) {
-      response.headers.set("X-Invoice-Warnings", encodeURIComponent(JSON.stringify(warnings)));
-    }
+    const response = buildInvoiceResponse(invoice, pdfBuffer, warnings);
+
+    const sync = await syncInvoice(invoice, { deelPdf: prepared.deelPdf, firaPdf: prepared.firaPdf, gstPdf: pdfBuffer }, config);
+    applySyncHeaders(response, sync);
+    console.info(`[generate] issued mode=${prepared.review.mode} edited=${draft.edited.length} sync=${sync.status}${sync.code ? `:${sync.code}` : ""}`);
     return response;
   } catch (error: unknown) {
     return routeErrorResponse(error, "generate", "Failed to generate the invoice.");
@@ -100,7 +93,6 @@ async function fromDraft(form: FormData, rawDraft: FormDataEntryValue): Promise<
 }
 
 function parseDraft(raw: FormDataEntryValue): InvoiceDraft {
-  const action = "Correct this field in the review form, then generate again.";
   let json: unknown;
   try {
     json = typeof raw === "string" ? JSON.parse(raw) : undefined;
@@ -112,7 +104,13 @@ function parseDraft(raw: FormDataEntryValue): InvoiceDraft {
       issue("DRAFT_INVALID", "request", "The review draft couldn't be read.", "Reload the page, upload the PDFs again and review them."),
     );
   }
-  const parsed = invoiceDraftSchema.safeParse(json);
+  return checkDraftSchema(json);
+}
+
+/** The draft as the schema accepts it, or DRAFT_INVALID with the path of every field it refused. */
+function checkDraftSchema(value: unknown): InvoiceDraft {
+  const action = "Correct this field in the review form, then generate again.";
+  const parsed = invoiceDraftSchema.safeParse(value);
   if (parsed.success) return parsed.data;
   throw new IssueError(
     parsed.error.issues.slice(0, 20).map((z) => {
@@ -133,17 +131,25 @@ async function fromLegacyForm(form: FormData): Promise<Prepared> {
   const deelPdf = await readDeelPdf(form);
   const firaPdf = await readPdfField(form, "firaFile", "The FIRA");
 
+  // Read both documents first, so every currency problem the engine found is reported together
+  const reading = await readDeel(deelPdf);
+  const firaExtraction = firaPdf ? await extractFira(firaPdf) : null;
+  const currencyIssues = [...reading.extraction.issues, ...(firaExtraction?.issues ?? [])].filter(
+    (i) => i.severity === "error" && (i.code === "DEEL_CURRENCY_UNSUPPORTED" || i.code === "FIRA_CURRENCY_UNSUPPORTED"),
+  );
+  if (currencyIssues.length > 0) throw new IssueError(currencyIssues);
+
   // Fail closed before any FIRA matching: a 0 or unreconciled total stops here
-  const deel = await parseDeelInvoice(deelPdf);
+  const deel = toDeelParsed(reading);
   validateDeelData(deel);
   const config: AppConfig = getConfig();
   validateSupplier(config.businessProfile);
 
-  let fira: { data: FiraParsedData; source: "pdf" | "manual" } | null = null;
-  if (firaPdf) {
-    fira = { data: await parseFiraPdf(firaPdf), source: "pdf" };
+  let fira: { data: FiraParsedData; source: "pdf" | "manual"; currency?: string } | null = null;
+  if (firaExtraction) {
+    fira = { data: toFiraParsed(firaExtraction), source: "pdf", currency: firaExtraction.fields.currency.value ?? undefined };
   } else if (manualInput) {
-    fira = { data: manualFira(deel.total, manualInput), source: "manual" };
+    fira = { data: manualFira(deel.total, manualInput), source: "manual", currency: "USD" };
   }
 
   const options = draftOptions({

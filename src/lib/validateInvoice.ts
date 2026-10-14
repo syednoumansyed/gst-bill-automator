@@ -1,5 +1,5 @@
 import { BusinessProfile } from "./config";
-import { deelIssues, supplierIssues } from "./draftValidation";
+import { deelIssues, isWholeCents, supplierIssues, toCents } from "./draftValidation";
 import { issue, IssueError, type Issue } from "./errors";
 import { DeelParsedInvoice, GeneratedInvoice } from "./types";
 
@@ -63,12 +63,17 @@ export function validateGeneratedInvoice(invoice: GeneratedInvoice): void {
   if (!isPositive(invoice.subtotal) || !isPositive(invoice.grandTotal) || lineAmounts.some((n) => !isNonNegative(n))) {
     fail(issue("DEEL_FIELD_UNREADABLE", "deel", "The invoice has an amount that is zero or not a number; it was not generated.", recheck, { field: "deel.total" }));
   }
-  const linesSum = invoice.lineItems.reduce((acc, item) => acc + item.amount, 0);
-  if (!near(linesSum, invoice.grandTotal)) {
+  // What's printed (two decimals) must be exactly what was checked: whole cents, summed as integers
+  const f = invoice.firaData;
+  const printed = [invoice.subtotal, invoice.grandTotal, ...lineAmounts, ...(f ? [f.originalUsdBilled, f.fundsRealizedUsd, f.fundsRealizedInr, f.bankChargesUsd] : [])];
+  if (printed.some((n) => !isWholeCents(n))) {
+    fail(issue("DRAFT_INVALID", "deel", "The invoice has an amount with a fraction of a cent; it was not generated.", recheck, { field: "deel.total" }));
+  }
+  const linesSum = invoice.lineItems.reduce((acc, item) => acc + toCents(item.amount), 0);
+  if (linesSum !== toCents(invoice.grandTotal) || toCents(invoice.subtotal) !== toCents(invoice.grandTotal)) {
     fail(issue("DEEL_ITEMS_DONT_SUM", "deel", "Invoice line items do not add up to the grand total; it was not generated.", recheck, { field: "deel.lineItems" }));
   }
-  if (invoice.firaData) {
-    const f = invoice.firaData;
+  if (f) {
     if (!isPositive(f.originalUsdBilled) || !isPositive(f.exchangeRate) || !isNonNegative(f.bankChargesUsd)) {
       fail(issue("FIRA_FIELD_UNREADABLE", "fira", "FIRA figures are incomplete; the invoice was not generated.", recheck, { field: "fira.fcyAmount" }));
     }
